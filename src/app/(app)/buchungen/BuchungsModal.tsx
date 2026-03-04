@@ -23,6 +23,8 @@ type Props = {
   allActiveCustomers: CustomerForAutocomplete[]
   prefilledCustomerId?: string
   prefilledCustomerName?: string
+  prefilledKennelIds?: string[]
+  prefilledStartDate?: string
   onSaved: (booking: BookingWithDetails, isNew: boolean) => void
   onStatusChanged: (booking: BookingWithDetails) => void
   onCancelled: (id: string) => void
@@ -57,6 +59,8 @@ export default function BuchungsModal({
   allActiveCustomers,
   prefilledCustomerId,
   prefilledCustomerName,
+  prefilledKennelIds,
+  prefilledStartDate,
   onSaved,
   onStatusChanged,
   onCancelled,
@@ -134,6 +138,13 @@ export default function BuchungsModal({
         setSelectedCustomerName('')
         setCustomerSearch('')
         setAvailableDogs([])
+      }
+
+      if (prefilledKennelIds && prefilledKennelIds.length > 0) {
+        setSelectedKennels(prefilledKennelIds)
+      }
+      if (prefilledStartDate) {
+        setStartDate(prefilledStartDate)
       }
     } else if (booking) {
       setMode('view')
