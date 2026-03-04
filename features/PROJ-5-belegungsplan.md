@@ -109,7 +109,101 @@
 ---
 
 ## Tech Design (Solution Architect)
-_To be added by /architecture_
+
+### Komponentenstruktur
+
+```
+/belegungsplan (Seite — lädt Daten vom Server)
+  └── BelegungsplanClient (interaktiver Bereich im Browser)
+        ├── Header
+        │   ├── Zeitraum-Anzeige ("04.03.2026 — 17.03.2026")
+        │   └── Navigation (‹ Zurück | Heute | Weiter ›)
+        │
+        ├── UnzugewiesenenBanner  (nur sichtbar wenn Buchungen ohne Zwinger)
+        │   └── UnzugewieseneKarte × N  (je 1 pro offene Buchung — ziehbar)
+        │
+        └── BelegungsRaster (CSS Grid: Zwinger × Tage)
+              ├── Spaltenköpfe (Mo 04.03. | Di 05.03. | ... × 14)
+              └── ZwingerZeile × N  (je 1 pro aktivem Zwinger)
+                    ├── ZwingerLabel  ("Zwinger 1")
+                    └── TagesSlot × 14  (je 1 pro Tag)
+                          ├── BookingSlot  (belegt — klickbar, farbig)
+                          └── FreierSlot   (leer — klickbar, Drop-Ziel)
+```
+
+**Wiederverwendet aus PROJ-3:**
+- `BuchungsModal` — wird sowohl für "Neue Buchung" (aus freiem Slot) als auch für "Buchung bearbeiten" (aus belegtem Slot) geöffnet
+
+---
+
+### Neue Dateien
+
+```
+src/app/(app)/belegungsplan/
+  ├── page.tsx                  ← Server-Seite: lädt Daten, gibt sie weiter
+  ├── BelegungsplanClient.tsx   ← Browser-Komponente: Grid, Drag & Drop, Modals
+  └── actions.ts                ← Server-Aktion: Zwinger zuweisen
+```
+
+---
+
+### Welche Daten werden geladen?
+
+Die Serverseite lädt beim Seitenaufruf zwei Dinge:
+
+1. **Alle aktiven Zwinger** — Nummer und ID (fix, ändert sich selten)
+2. **Alle Buchungen** für den angezeigten 14-Tage-Zeitraum — inkl. Kundenname, Hundenamen, Buchungstyp, Zeitraum, zugewiesene Zwinger und Status (nicht storniert)
+
+Die Daten werden als "Startwert" an die Browser-Komponente übergeben.
+
+---
+
+### Navigation (vor/zurück)
+
+Wenn der Nutzer auf „Weiter" oder „Zurück" klickt, ändert sich ein URL-Parameter (`?from=2026-03-18`). Die Seite lädt dann automatisch neu mit den Daten für den neuen Zeitraum. Das hat zwei Vorteile:
+- Die Ansicht ist bookmarkbar / teilbar
+- Kein komplizierter Client-seitiger Ladezustand nötig
+
+---
+
+### Drag & Drop — wie es funktioniert
+
+Der Browser hat eine eingebaute Drag & Drop-Funktion — keine externe Bibliothek nötig:
+
+1. Nutzer beginnt zu ziehen → Buchungs-ID wird „mitgenommen"
+2. Während des Ziehens: freie Slots leuchten grün, belegte rot
+3. Nutzer lässt los → Server-Aktion `assignKennel` wird aufgerufen
+4. Server prüft nochmal: ist der Zwinger wirklich frei? (Schutz vor gleichzeitigen Änderungen)
+5. Bei Erfolg: Seite aktualisiert sich automatisch, Buchung erscheint im Raster
+6. Bei Konflikt: Fehlermeldung, kein Datenverlust
+
+---
+
+### Tech-Entscheidungen
+
+| Entscheidung | Gewählt | Warum |
+|---|---|---|
+| Raster-Layout | CSS Grid | Perfekt für Zeilen × Spalten; Buchungen über mehrere Tage = `span N` Spalten |
+| Drag & Drop | Browser-nativ (kein Package) | Ausreichend für Desktop-only; kein Mehrgewicht |
+| Navigation | URL-Parameter (`?from=`) | Bookmarkbar, einfache Serverlogik |
+| Daten-Refresh nach Drop | Seitenaktualisierung | Einfachste korrekte Lösung; kein Optimistic-UI-Overhead |
+| Buchungs-Modal | Wiederverwendet aus PROJ-3 | Kein Duplikat-Code; gleiche Validierungslogik |
+
+---
+
+### Keine neuen Datenbank-Tabellen
+
+PROJ-5 benötigt keine neuen Tabellen. Die bestehende `booking_kennels`-Verknüpfungstabelle (Buchung ↔ Zwinger) wird genutzt. Die Server-Aktion schreibt lediglich eine neue Zeile darin — nach Verfügbarkeitsprüfung per vorhandener DB-Funktion (`check_kennel_availability`).
+
+---
+
+### Abhängigkeiten (keine neuen Pakete nötig)
+
+Alle benötigten Technologien sind bereits installiert:
+- Next.js App Router (Seiten, Server Actions)
+- Supabase Client (Datenbankzugriff)
+- Tailwind CSS (Styling des Rasters und der Karten)
+- React (Browser-Komponente, State für Drag & Drop)
 
 ## QA Test Results
 _To be added by /qa_
