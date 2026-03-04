@@ -12,7 +12,13 @@
 
 | ID | Feature | Status | Spec | Created |
 |----|---------|--------|------|---------|
+| PROJ-1 | Authentifizierung | Deployed | [PROJ-1-authentifizierung.md](PROJ-1-authentifizierung.md) | — |
+| PROJ-2 | CRM — Kundenverwaltung & Hundedaten | Deployed | [PROJ-2-crm-kundenverwaltung.md](PROJ-2-crm-kundenverwaltung.md) | — |
+| PROJ-3 | Buchungsmodul | Deployed | [PROJ-3-buchungsmodul.md](PROJ-3-buchungsmodul.md) | — |
+| PROJ-4 | Preiseinstellungen | Deployed | — | — |
+| PROJ-5 | Belegungsplan | Planned | [PROJ-5-belegungsplan.md](PROJ-5-belegungsplan.md) | 2026-03-04 |
+| PROJ-6 | Dashboard | Deployed | [PROJ-6-dashboard.md](PROJ-6-dashboard.md) | — |
 
 <!-- Add features above this line -->
 
-## Next Available ID: PROJ-1
+## Next Available ID: PROJ-7
