@@ -1,0 +1,165 @@
+erDiagram
+    USERS {
+        uuid id PK
+        string email UK
+        enum role "admin | mitarbeiter"
+        string full_name
+        timestamp created_at
+    }
+
+    CUSTOMERS {
+        uuid id PK
+        enum salutation "Herr | Frau | Divers"
+        string first_name_1
+        string last_name_1
+        string first_name_2 "optional"
+        string last_name_2 "optional"
+        string street
+        string zip
+        string city
+        string mobile_phone
+        string phone "optional"
+        string email
+        date customer_since "auto: erste Buchung"
+        string referral_source
+        boolean newsletter_consent
+        timestamp newsletter_consent_date
+        enum status "im_prozess | tel_nicht_erreicht | buchung_bestaetigt | neukunde_gewonnen | absage_kunde | absage_gudrun | termin_geaendert | storniert"
+        string status_reason "bei Absage/Stornierung"
+        text notes
+        timestamp created_at
+        timestamp updated_at
+        uuid created_by FK
+    }
+
+    DOGS {
+        uuid id PK
+        uuid customer_id FK
+        string name
+        string breed
+        date birth_date
+        enum gender "maennlich | weiblich"
+        boolean is_neutered
+        text behavioral_notes "Verhaltensweisen/Erkrankungen"
+        text compatibility_notes "Vertraeglichkeit"
+        timestamp created_at
+        timestamp updated_at
+    }
+
+    DOG_DOCUMENTS {
+        uuid id PK
+        uuid dog_id FK
+        enum document_type "impfpass | haftpflicht"
+        string file_path "Supabase Storage"
+        string file_name
+        integer file_size_bytes "max 10MB"
+        enum mime_type "image/jpeg | image/png | application/pdf"
+        timestamp uploaded_at
+        uuid uploaded_by FK
+    }
+
+    KENNELS {
+        uuid id PK
+        integer number "1-30"
+        enum size "S | M | L"
+        boolean has_heating "Heizung"
+        enum hatch_status "ja | nein | in_planung"
+        string special_note "z.B. Abstellzwinger"
+        boolean is_active "false fuer Zwinger 20 und 30"
+        timestamp created_at
+    }
+
+    BOOKINGS {
+        uuid id PK
+        uuid customer_id FK
+        enum booking_type "uebernachtung | tagesbetreuung_flexibel | tagesbetreuung_regelmaessig"
+        date start_date
+        date end_date
+        integer duration_days "auto: inkl. Bring- und Abholtag"
+        integer number_of_dogs "auto: aus booking_dogs"
+        decimal total_price "auto: berechnet"
+        text medication_notes
+        text medication_schedule
+        text items_list "Gegenstandsliste"
+        text notes "Freitextfeld"
+        enum status "geplant | aktiv | abgeschlossen | storniert"
+        date cancellation_date "bei Stornierung"
+        decimal cancellation_fee "auto: berechnet"
+        string cancellation_reason
+        timestamp created_at
+        timestamp updated_at
+        uuid created_by FK
+    }
+
+    BOOKING_DOGS {
+        uuid id PK
+        uuid booking_id FK
+        uuid dog_id FK
+    }
+
+    BOOKING_KENNELS {
+        uuid id PK
+        uuid booking_id FK
+        uuid kennel_id FK
+    }
+
+    PRICES {
+        uuid id PK
+        enum service_type "uebernachtung | tagesbetreuung_flexibel | tagesbetreuung_regelmaessig"
+        integer dog_count "1 oder 2"
+        enum frequency "null | 1x_woche | 2x_woche"
+        decimal price_amount
+        boolean is_monthly "true fuer regelmaessig"
+        date valid_from
+        date valid_to "null = aktuell gueltig"
+        uuid created_by FK
+        timestamp created_at
+    }
+
+    WAITLIST {
+        uuid id PK
+        uuid customer_id FK
+        date desired_start_date
+        date desired_end_date
+        integer number_of_dogs
+        enum booking_type "uebernachtung | tagesbetreuung_flexibel"
+        text notes
+        enum status "wartend | kontaktiert | gebucht | abgesagt"
+        timestamp created_at
+        uuid created_by FK
+    }
+
+    GDPR_CONSENT_LOG {
+        uuid id PK
+        uuid customer_id FK
+        enum consent_type "newsletter | datenverarbeitung"
+        boolean consented
+        timestamp consent_date
+        text notes
+        timestamp created_at
+    }
+
+    AUDIT_LOG {
+        uuid id PK
+        uuid user_id FK
+        enum action "create | update | delete"
+        string entity_type "customers | dogs | bookings etc."
+        uuid entity_id
+        jsonb old_values
+        jsonb new_values
+        timestamp created_at
+    }
+
+    CUSTOMERS ||--o{ DOGS : "hat 1-4"
+    CUSTOMERS ||--o{ BOOKINGS : "tätigt"
+    CUSTOMERS ||--o{ WAITLIST : "steht auf"
+    CUSTOMERS ||--o{ GDPR_CONSENT_LOG : "erteilt"
+    DOGS ||--o{ DOG_DOCUMENTS : "hat"
+    DOGS ||--o{ BOOKING_DOGS : "ist in"
+    BOOKINGS ||--o{ BOOKING_DOGS : "enthält"
+    BOOKINGS ||--o{ BOOKING_KENNELS : "belegt"
+    KENNELS ||--o{ BOOKING_KENNELS : "wird belegt durch"
+    USERS ||--o{ BOOKINGS : "erstellt"
+    USERS ||--o{ AUDIT_LOG : "verursacht"
+    USERS ||--o{ CUSTOMERS : "erstellt"
+    PRICES }o--|| USERS : "erstellt von"
