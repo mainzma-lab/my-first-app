@@ -7,16 +7,15 @@ import BuchungsModal from '../buchungen/BuchungsModal'
 import { assignKennel } from './actions'
 
 const TOTAL_DAYS = 90
-const TODAY_OFFSET = 14 // days before today that the window starts
 
 type Props = {
   kennels: Kennel[]
   bookings: BookingWithDetails[]
   allActiveCustomers: CustomerForAutocomplete[]
-  startDate: string // = today - TODAY_OFFSET, server-computed
+  startDate: string // = today - 14 days, server-computed
 }
 
-// ─── Date utilities (all UTC-safe, DST-proof) ──────────────────────────────────
+// ─── Date utilities (UTC-safe, DST-proof) ──────────────────────────────────────
 
 function addDaysUTC(dateStr: string, n: number): string {
   const [y, m, d] = dateStr.split('-').map(Number)
@@ -27,13 +26,9 @@ function getDays(startDate: string): string[] {
   return Array.from({ length: TOTAL_DAYS }, (_, i) => addDaysUTC(startDate, i))
 }
 
-/** Local today (not UTC) — correct for the user's timezone */
 function getLocalToday(): string {
   const now = new Date()
-  const y = now.getFullYear()
-  const m = String(now.getMonth() + 1).padStart(2, '0')
-  const d = String(now.getDate()).padStart(2, '0')
-  return `${y}-${m}-${d}`
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
 }
 
 function formatDayHeader(dateStr: string): { weekday: string; date: string } {
@@ -126,48 +121,43 @@ export default function BelegungsplanClient({
   const today = getLocalToday()
   const todayIdx = days.indexOf(today)
 
-  // ─── Refs for scroll-to-today ───────────────────────────────────────────────
+  // ─── Refs for scroll-to-today ─────────────────────────────────────────────
+  // containerRef: the horizontally scrollable table wrapper
+  // todayThRef: the <th> for today's column
   const containerRef = useRef<HTMLDivElement>(null)
   const todayThRef = useRef<HTMLTableCellElement>(null)
 
   useEffect(() => {
-    if (containerRef.current && todayThRef.current) {
-      const container = containerRef.current
-      const col = todayThRef.current
-      // Scroll so today is visible ~2 columns from the left edge
-      const scrollLeft = col.offsetLeft - 128 - 2 * 88
-      container.scrollLeft = Math.max(0, scrollLeft)
-    }
+    scrollToToday()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   function scrollToToday() {
-    if (containerRef.current && todayThRef.current) {
-      const container = containerRef.current
-      const col = todayThRef.current
-      const scrollLeft = col.offsetLeft - 128 - 2 * 88
-      container.scrollLeft = Math.max(0, scrollLeft)
-    }
+    if (!containerRef.current || !todayThRef.current) return
+    const col = todayThRef.current
+    // Show today ~2 columns from the left edge (accounting for sticky label col ~128px)
+    containerRef.current.scrollLeft = Math.max(0, col.offsetLeft - 128 - 2 * 88)
   }
 
-  // ─── Modal state ─────────────────────────────────────────────────────────────
+  // ─── Modal state ──────────────────────────────────────────────────────────
   const [modalBooking, setModalBooking] = useState<BookingWithDetails | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [prefilledKennelIds, setPrefilledKennelIds] = useState<string[] | undefined>()
   const [prefilledStartDate, setPrefilledStartDate] = useState<string | undefined>()
 
-  // ─── Drag & Drop state ───────────────────────────────────────────────────────
+  // ─── Drag & Drop state ────────────────────────────────────────────────────
   const [draggingBookingId, setDraggingBookingId] = useState<string | null>(null)
   const [hoverKennelId, setHoverKennelId] = useState<string | null>(null)
   const [assignError, setAssignError] = useState<string | null>(null)
   const [isAssigning, setIsAssigning] = useState(false)
 
-  // ─── Unzugewiesene Buchungen ─────────────────────────────────────────────────
+  // ─── Unzugewiesene Buchungen ──────────────────────────────────────────────
   const windowEnd = days[days.length - 1]
   const unassigned = bookings.filter(
     b => b.kennels.length === 0 && b.start_date <= windowEnd && b.end_date >= startDate
   )
 
-  // ─── Conflict check ──────────────────────────────────────────────────────────
+  // ─── Conflict check ───────────────────────────────────────────────────────
   function isKennelConflicted(kennelId: string, bookingId: string): boolean {
     const dragged = bookings.find(b => b.id === bookingId)
     if (!dragged) return false
@@ -180,7 +170,7 @@ export default function BelegungsplanClient({
     )
   }
 
-  // ─── Drop handler ────────────────────────────────────────────────────────────
+  // ─── Drop handler ─────────────────────────────────────────────────────────
   async function handleDrop(kennelId: string, e: React.DragEvent) {
     e.preventDefault()
     const bookingId = e.dataTransfer.getData('bookingId')
@@ -195,7 +185,7 @@ export default function BelegungsplanClient({
     router.refresh()
   }
 
-  // ─── Modal helpers ───────────────────────────────────────────────────────────
+  // ─── Modal helpers ────────────────────────────────────────────────────────
   function openBookingDetail(booking: BookingWithDetails) {
     setModalBooking(booking)
     setPrefilledKennelIds(undefined)
@@ -218,12 +208,11 @@ export default function BelegungsplanClient({
   }
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
-
-      {/* ─── Header ─────────────────────────────────────────────────── */}
-      <div className="px-8 py-4 border-b border-gray-200 bg-white shrink-0 flex items-center justify-between">
+    <>
+      {/* ─── Header (sticky) ──────────────────────────────────────────── */}
+      <div className="sticky top-0 z-20 px-8 py-4 border-b border-gray-200 bg-white flex items-center justify-between">
         <h1 className="text-2xl font-bold text-gray-900">Belegungsplan</h1>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-4">
           {todayIdx !== -1 && (
             <button
               onClick={scrollToToday}
@@ -249,17 +238,17 @@ export default function BelegungsplanClient({
         </div>
       </div>
 
-      {/* ─── Error banner ────────────────────────────────────────────── */}
+      {/* ─── Error banner ─────────────────────────────────────────────── */}
       {assignError && (
-        <div className="mx-8 mt-3 shrink-0 flex items-center justify-between rounded-md border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
+        <div className="mx-8 mt-4 flex items-center justify-between rounded-md border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
           <span>⚠ {assignError}</span>
           <button onClick={() => setAssignError(null)} className="ml-4 text-red-400 hover:text-red-600">×</button>
         </div>
       )}
 
-      {/* ─── Unzugewiesene Buchungen Banner ──────────────────────────── */}
+      {/* ─── Unzugewiesene Buchungen Banner ───────────────────────────── */}
       {unassigned.length > 0 && (
-        <div className="px-8 pt-4 pb-2 shrink-0">
+        <div className="px-8 pt-4 pb-2">
           <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
             Ohne Zwinger ({unassigned.length}) — ziehen um zuzuweisen
           </p>
@@ -306,17 +295,18 @@ export default function BelegungsplanClient({
         </div>
       )}
 
-      {/* ─── Scrollable Raster ───────────────────────────────────────── */}
-      <div ref={containerRef} className="flex-1 overflow-auto px-8 py-4">
-        {kennels.length === 0 ? (
-          <div className="py-16 text-center text-sm italic text-gray-400">
-            Keine aktiven Zwinger vorhanden.
-          </div>
-        ) : (
-          <div className="rounded-lg border border-gray-200 bg-white inline-block min-w-full">
-            <table className="border-collapse text-sm" style={{ width: `${128 + TOTAL_DAYS * 88}px` }}>
+      {/* ─── Table ────────────────────────────────────────────────────── */}
+      {kennels.length === 0 ? (
+        <div className="py-16 text-center text-sm italic text-gray-400">
+          Keine aktiven Zwinger vorhanden.
+        </div>
+      ) : (
+        /* Horizontal scroll container */
+        <div ref={containerRef} className="overflow-x-auto px-8 py-4">
+          <div className="rounded-lg border border-gray-200 bg-white" style={{ width: `${128 + TOTAL_DAYS * 88}px` }}>
+            <table className="w-full border-collapse text-sm">
 
-              {/* ─── colgroup for today column highlight ───────────────── */}
+              {/* colgroup: today column background */}
               <colgroup>
                 <col style={{ width: '128px' }} />
                 {days.map((day, i) => (
@@ -342,8 +332,8 @@ export default function BelegungsplanClient({
                       <th
                         key={day}
                         ref={isToday ? todayThRef : undefined}
-                        className={`px-1 py-1.5 text-center text-xs font-medium ${
-                          isToday ? 'text-blue-700 font-semibold' : 'text-gray-500'
+                        className={`px-1 py-1.5 text-center text-xs ${
+                          isToday ? 'text-blue-700 font-semibold' : 'text-gray-500 font-medium'
                         }`}
                       >
                         <div>{weekday}</div>
@@ -375,7 +365,7 @@ export default function BelegungsplanClient({
                       }}
                       onDrop={e => handleDrop(kennel.id, e)}
                     >
-                      {/* Kennel label — sticky */}
+                      {/* Sticky kennel label */}
                       <td
                         className={`sticky left-0 z-10 border-r border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700 whitespace-nowrap ${
                           rowIdx % 2 === 1 ? 'bg-gray-50' : 'bg-white'
@@ -389,11 +379,9 @@ export default function BelegungsplanClient({
                           const b = cell.booking
                           const dogs = b.dogs.map(d => d.name)
                           const dogLabel =
-                            dogs.length === 0
-                              ? null
-                              : dogs.length <= 2
-                                ? dogs.join(', ')
-                                : `${dogs[0]} +${dogs.length - 1}`
+                            dogs.length === 0 ? null
+                            : dogs.length <= 2 ? dogs.join(', ')
+                            : `${dogs[0]} +${dogs.length - 1}`
                           const lastName = b.customer_name.split(' ').slice(-1)[0]
                           const color = SLOT_COLORS[b.booking_type] ?? 'bg-gray-400 text-white hover:bg-gray-500'
                           const roundingClass =
@@ -417,7 +405,6 @@ export default function BelegungsplanClient({
                           )
                         }
 
-                        // Free cell — drop target + click to new booking
                         return (
                           <td key={cellIdx} className="p-0.5 align-top">
                             <button
@@ -434,10 +421,10 @@ export default function BelegungsplanClient({
               </tbody>
             </table>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
-      {/* ─── Zuweisen-Overlay ────────────────────────────────────────── */}
+      {/* ─── Zuweisen-Overlay ──────────────────────────────────────────── */}
       {isAssigning && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/20">
           <div className="rounded-lg bg-white px-6 py-4 shadow-xl text-sm text-gray-700">
@@ -446,7 +433,7 @@ export default function BelegungsplanClient({
         </div>
       )}
 
-      {/* ─── Buchungs-Modal ──────────────────────────────────────────── */}
+      {/* ─── Buchungs-Modal ────────────────────────────────────────────── */}
       <BuchungsModal
         booking={modalBooking}
         isOpen={isModalOpen}
@@ -459,6 +446,6 @@ export default function BelegungsplanClient({
         onStatusChanged={() => { closeModal(); router.refresh() }}
         onCancelled={() => { closeModal(); router.refresh() }}
       />
-    </div>
+    </>
   )
 }
