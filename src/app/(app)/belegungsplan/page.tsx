@@ -2,20 +2,16 @@ import { getBelegungsplanData } from './actions'
 import { getActiveCustomersForAutocomplete } from '../buchungen/actions'
 import BelegungsplanClient from './BelegungsplanClient'
 
-type Props = {
-  searchParams: Promise<{ from?: string }>
+function addDaysUTC(dateStr: string, n: number): string {
+  const [y, m, d] = dateStr.split('-').map(Number)
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().split('T')[0]
 }
 
-function addDays(dateStr: string, n: number): string {
-  const d = new Date(dateStr)
-  d.setDate(d.getDate() + n)
-  return d.toISOString().split('T')[0]
-}
-
-export default async function BelegungsplanPage({ searchParams }: Props) {
-  const params = await searchParams
-  const startDate = params.from ?? new Date().toISOString().split('T')[0]
-  const endDate = addDays(startDate, 13)
+// Always load a 90-day window: today-14 to today+75
+export default async function BelegungsplanPage() {
+  const todayUTC = new Date().toISOString().split('T')[0]
+  const startDate = addDaysUTC(todayUTC, -14)
+  const endDate = addDaysUTC(todayUTC, 75)
 
   const [{ kennels, bookings }, allActiveCustomers] = await Promise.all([
     getBelegungsplanData(startDate, endDate),
@@ -28,7 +24,6 @@ export default async function BelegungsplanPage({ searchParams }: Props) {
       bookings={bookings}
       allActiveCustomers={allActiveCustomers}
       startDate={startDate}
-      endDate={endDate}
     />
   )
 }
