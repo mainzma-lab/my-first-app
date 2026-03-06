@@ -13,6 +13,7 @@ const NAV_ITEMS = [
 ]
 
 const ADMIN_NAV_ITEMS = [
+  { href: '/reporting', label: 'Reporting' },
   { href: '/einstellungen/benutzer', label: 'Benutzerverwaltung' },
   { href: '/einstellungen/preise', label: 'Preise' },
   { href: '/einstellungen/crm', label: 'CRM Einstellungen' },

@@ -1,420 +1,520 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import type { BookingWithDetails, Kennel, CustomerForAutocomplete } from '../buchungen/actions'
 import BuchungsModal from '../buchungen/BuchungsModal'
-import { assignKennel } from './actions'
 
-const TOTAL_DAYS = 90
+// ─── Layout constants ─────────────────────────────────────────────────────────
+const KENNEL_COL_W = 120  // px – sticky left column
+const DAY_COL_W    = 80   // px – each day column
+const TOTAL_DAYS   = 90   // today-14 … today+75
 
-type Props = {
+// ─── Booking type config ──────────────────────────────────────────────────────
+const BOOKING_TYPES = [
+  { value: 'uebernachtung',               label: 'Übernachtung',       bg: '#c7d2fe', text: '#3730a3', dot: '#818cf8' },
+  { value: 'tagesbetreuung_flexibel',     label: 'Tagesbetr. (flex.)', bg: '#fde68a', text: '#92400e', dot: '#fbbf24' },
+  { value: 'tagesbetreuung_regelmaessig', label: 'Tagesbetr. (reg.)',  bg: '#a7f3d0', text: '#065f46', dot: '#34d399' },
+] as const
+
+type FilterType = 'all' | typeof BOOKING_TYPES[number]['value']
+
+const WEEKDAYS = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa']
+
+// ─── Niedersachsen: gesetzliche Feiertage ─────────────────────────────────────
+const FEIERTAGE_NDS = new Set([
+  // 2025
+  '2025-01-01', // Neujahr
+  '2025-04-18', // Karfreitag
+  '2025-04-21', // Ostermontag
+  '2025-05-01', // Tag der Arbeit
+  '2025-05-29', // Christi Himmelfahrt
+  '2025-06-09', // Pfingstmontag
+  '2025-10-03', // Tag der Deutschen Einheit
+  '2025-10-31', // Reformationstag
+  '2025-12-25', // 1. Weihnachtstag
+  '2025-12-26', // 2. Weihnachtstag
+  // 2026
+  '2026-01-01', // Neujahr
+  '2026-04-03', // Karfreitag
+  '2026-04-06', // Ostermontag
+  '2026-05-01', // Tag der Arbeit
+  '2026-05-14', // Christi Himmelfahrt
+  '2026-05-25', // Pfingstmontag
+  '2026-10-03', // Tag der Deutschen Einheit
+  '2026-10-31', // Reformationstag
+  '2026-12-25', // 1. Weihnachtstag
+  '2026-12-26', // 2. Weihnachtstag
+])
+
+// ─── Niedersachsen: Schulferien (Start/Ende inklusiv) ─────────────────────────
+const SCHULFERIEN_NDS: [string, string][] = [
+  ['2025-04-07', '2025-04-22'], // Osterferien 2025
+  ['2025-05-30', '2025-05-30'], // Brückentag Christi Himmelfahrt 2025
+  ['2025-07-03', '2025-08-13'], // Sommerferien 2025
+  ['2025-10-13', '2025-10-25'], // Herbstferien 2025
+  ['2025-12-22', '2026-01-05'], // Weihnachtsferien 2025/26
+  ['2026-02-02', '2026-02-03'], // Halbjahresferien 2026
+  ['2026-03-23', '2026-04-07'], // Osterferien 2026
+  ['2026-05-15', '2026-05-15'], // Brückentag Christi Himmelfahrt 2026
+  ['2026-05-26', '2026-05-26'], // Pfingstferien 2026
+  ['2026-07-02', '2026-08-12'], // Sommerferien 2026
+]
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function msFromIso(iso: string): number {
+  const [y, m, d] = iso.split('-').map(Number)
+  return Date.UTC(y, m - 1, d)
+}
+function isoFromMs(ms: number): string {
+  return new Date(ms).toISOString().split('T')[0]
+}
+function dayInfo(iso: string) {
+  const ms     = msFromIso(iso)
+  const utcDay = new Date(ms).getUTCDay()
+  const [, month, day] = iso.split('-').map(Number)
+  return {
+    weekday: WEEKDAYS[utcDay],
+    day,
+    month: String(month).padStart(2, '0'),
+    isWeekend: utcDay === 0 || utcDay === 6,
+  }
+}
+function formatDate(iso: string): string {
+  const [, m, d] = iso.split('-').map(Number)
+  return `${String(d).padStart(2, '0')}.${String(m).padStart(2, '0')}.`
+}
+function isSchulferienTag(iso: string): boolean {
+  const ms = msFromIso(iso)
+  return SCHULFERIEN_NDS.some(([s, e]) => ms >= msFromIso(s) && ms <= msFromIso(e))
+}
+
+// ─── Props ────────────────────────────────────────────────────────────────────
+interface Props {
   kennels: Kennel[]
   bookings: BookingWithDetails[]
   allActiveCustomers: CustomerForAutocomplete[]
-  startDate: string // = today - 14 days, server-computed
-}
-
-// ─── Date utilities (UTC-safe, DST-proof) ──────────────────────────────────────
-
-function addDaysUTC(dateStr: string, n: number): string {
-  const [y, m, d] = dateStr.split('-').map(Number)
-  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().split('T')[0]
-}
-
-function getDays(startDate: string): string[] {
-  return Array.from({ length: TOTAL_DAYS }, (_, i) => addDaysUTC(startDate, i))
-}
-
-function getLocalToday(): string {
-  const now = new Date()
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
-}
-
-function formatDayHeader(dateStr: string): { weekday: string; date: string } {
-  const d = new Date(dateStr + 'T00:00:00Z')
-  return {
-    weekday: d.toLocaleDateString('de-DE', { weekday: 'short', timeZone: 'UTC' }),
-    date: d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', timeZone: 'UTC' }),
-  }
-}
-
-// ─── Colors ────────────────────────────────────────────────────────────────────
-
-const SLOT_COLORS: Record<string, string> = {
-  uebernachtung: 'bg-indigo-500 hover:bg-indigo-600 text-white',
-  tagesbetreuung_flexibel: 'bg-amber-500 hover:bg-amber-600 text-white',
-  tagesbetreuung_regelmaessig: 'bg-green-500 hover:bg-green-600 text-white',
-}
-
-const BANNER_COLORS: Record<string, string> = {
-  uebernachtung: 'bg-indigo-50 border-indigo-200 text-indigo-800',
-  tagesbetreuung_flexibel: 'bg-amber-50 border-amber-200 text-amber-800',
-  tagesbetreuung_regelmaessig: 'bg-green-50 border-green-200 text-green-800',
-}
-
-// ─── Grid computation ──────────────────────────────────────────────────────────
-
-type FreeCell = { type: 'free'; date: string; kennelId: string }
-type BookingCell = {
-  type: 'booking'
-  booking: BookingWithDetails
-  span: number
-  isStart: boolean
-  isEnd: boolean
-}
-type Cell = FreeCell | BookingCell
-
-function computeKennelCells(kennel: Kennel, bookings: BookingWithDetails[], days: string[]): Cell[] {
-  const windowStart = days[0]
-  const windowEnd = days[days.length - 1]
-
-  const kennelBookings = bookings
-    .filter(b => b.kennels.some(k => k.id === kennel.id))
-    .filter(b => b.start_date <= windowEnd && b.end_date >= windowStart)
-    .sort((a, b) => a.start_date.localeCompare(b.start_date))
-
-  const cells: Cell[] = []
-  let dayIndex = 0
-
-  for (const booking of kennelBookings) {
-    const visibleStart = booking.start_date < windowStart ? windowStart : booking.start_date
-    const visibleEnd = booking.end_date > windowEnd ? windowEnd : booking.end_date
-
-    const startIdx = days.indexOf(visibleStart)
-    const endIdx = days.indexOf(visibleEnd)
-    if (startIdx === -1 || endIdx === -1) continue
-
-    while (dayIndex < startIdx) {
-      cells.push({ type: 'free', date: days[dayIndex], kennelId: kennel.id })
-      dayIndex++
-    }
-
-    cells.push({
-      type: 'booking',
-      booking,
-      span: endIdx - startIdx + 1,
-      isStart: booking.start_date >= windowStart,
-      isEnd: booking.end_date <= windowEnd,
-    })
-    dayIndex = endIdx + 1
-  }
-
-  while (dayIndex < TOTAL_DAYS) {
-    cells.push({ type: 'free', date: days[dayIndex], kennelId: kennel.id })
-    dayIndex++
-  }
-
-  return cells
+  startDate: string  // YYYY-MM-DD (always today – 14 days)
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
+export default function BelegungsplanClient({ kennels, bookings, allActiveCustomers, startDate }: Props) {
+  const router          = useRouter()
+  const containerRef    = useRef<HTMLDivElement>(null)  // overflow-x-auto body scroll container
+  const headerScrollRef = useRef<HTMLDivElement>(null)  // sticky date header (overflow-x hidden)
+  const toolbarRef      = useRef<HTMLDivElement>(null)  // sticky toolbar
+  const [toolbarH, setToolbarH] = useState(0)
 
-export default function BelegungsplanClient({
-  kennels,
-  bookings,
-  allActiveCustomers,
-  startDate,
-}: Props) {
-  const router = useRouter()
-  const days = getDays(startDate)
-  const today = getLocalToday()
-  const todayIdx = days.indexOf(today)
-
-  // ─── Refs for scroll-to-today ─────────────────────────────────────────────
-  // containerRef: the horizontally scrollable table wrapper
-  // todayThRef: the <th> for today's column
-  const containerRef = useRef<HTMLDivElement>(null)
-  const todayThRef = useRef<HTMLTableCellElement>(null)
-
-  useEffect(() => {
-    scrollToToday()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  function scrollToToday() {
-    if (!containerRef.current || !todayThRef.current) return
-    const col = todayThRef.current
-    // Show today ~2 columns from the left edge (accounting for sticky label col ~128px)
-    containerRef.current.scrollLeft = Math.max(0, col.offsetLeft - 128 - 2 * 88)
-  }
-
-  // ─── Modal state ──────────────────────────────────────────────────────────
-  const [modalBooking, setModalBooking] = useState<BookingWithDetails | null>(null)
-  const [isModalOpen, setIsModalOpen] = useState(false)
-  const [prefilledKennelIds, setPrefilledKennelIds] = useState<string[] | undefined>()
+  // ── State ──────────────────────────────────────────────────────────────────
+  const [filterType, setFilterType]               = useState<FilterType>('all')
+  const [search, setSearch]                       = useState('')
+  const [isOverview, setIsOverview]               = useState(false)
+  const [modalBooking, setModalBooking]           = useState<BookingWithDetails | null>(null)
+  const [isModalOpen, setIsModalOpen]             = useState(false)
+  const [prefilledKennelIds, setPrefilledKennelIds] = useState<string[]>([])
   const [prefilledStartDate, setPrefilledStartDate] = useState<string | undefined>()
 
-  // ─── Drag & Drop state ────────────────────────────────────────────────────
-  const [draggingBookingId, setDraggingBookingId] = useState<string | null>(null)
-  const [hoverKennelId, setHoverKennelId] = useState<string | null>(null)
-  const [assignError, setAssignError] = useState<string | null>(null)
-  const [isAssigning, setIsAssigning] = useState(false)
+  // ── Day list ───────────────────────────────────────────────────────────────
+  const days = useMemo<string[]>(() => {
+    const startMs = msFromIso(startDate)
+    return Array.from({ length: TOTAL_DAYS }, (_, i) => isoFromMs(startMs + i * 86_400_000))
+  }, [startDate])
 
-  // ─── Unzugewiesene Buchungen ──────────────────────────────────────────────
-  const windowEnd = days[days.length - 1]
-  const unassigned = bookings.filter(
-    b => b.kennels.length === 0 && b.start_date <= windowEnd && b.end_date >= startDate
+  const todayStr = useMemo(() => new Date().toISOString().split('T')[0], [])
+  const todayIdx = useMemo(() => days.indexOf(todayStr), [days, todayStr])
+
+  // ── Colgroup: shared by both header and body tables for aligned column widths ─
+  const colgroup = useMemo(() => (
+    <colgroup>
+      <col style={{ width: KENNEL_COL_W }} />
+      {days.map(d => <col key={d} style={{ width: DAY_COL_W }} />)}
+    </colgroup>
+  ), [days])
+
+  // ── Measure toolbar height so sticky header sits flush below toolbar ────────
+  useLayoutEffect(() => {
+    if (toolbarRef.current) setToolbarH(toolbarRef.current.getBoundingClientRect().height)
+  }, [])
+
+  // ── Scroll to today ────────────────────────────────────────────────────────
+  const scrollToToday = useCallback(() => {
+    const c = containerRef.current
+    if (!c || todayIdx === -1) return
+    const newScrollLeft = Math.max(0, KENNEL_COL_W + todayIdx * DAY_COL_W + DAY_COL_W / 2 - c.clientWidth / 2)
+    c.scrollLeft = newScrollLeft
+    if (headerScrollRef.current) headerScrollRef.current.scrollLeft = newScrollLeft
+  }, [todayIdx])
+
+  useEffect(() => {
+    requestAnimationFrame(scrollToToday)
+  }, [scrollToToday])
+
+  // ── Sync header scroll with body scroll (user-initiated scroll) ────────────
+  const onBodyScroll = useCallback(() => {
+    if (headerScrollRef.current && containerRef.current) {
+      headerScrollRef.current.scrollLeft = containerRef.current.scrollLeft
+    }
+  }, [])
+
+  // ── Filtered bookings ──────────────────────────────────────────────────────
+  const filteredBookings = useMemo(() => bookings.filter(b => {
+    if (filterType !== 'all' && b.booking_type !== filterType) return false
+    if (search.trim()) {
+      const q = search.trim().toLowerCase()
+      if (!b.customer_name.toLowerCase().includes(q) &&
+          !b.dogs.some(d => d.name.toLowerCase().includes(q))) return false
+    }
+    return true
+  }), [bookings, filterType, search])
+
+  // ── Grid map: kennelId → dateStr → booking | 'cont' ───────────────────────
+  // First visible day of a booking (even if it started before our window) = booking reference
+  const gridMap = useMemo(() => {
+    const map: Record<string, Record<string, BookingWithDetails | 'cont'>> = {}
+    for (const k of kennels) map[k.id] = {}
+
+    for (const b of filteredBookings) {
+      for (const k of b.kennels) {
+        if (!map[k.id]) continue
+        const startMs = msFromIso(b.start_date)
+        const endMs   = msFromIso(b.end_date)
+        let first = true
+        for (let i = 0; i < days.length; i++) {
+          const dayMs = msFromIso(days[i])
+          if (dayMs >= startMs && dayMs <= endMs) {
+            map[k.id][days[i]] = first ? b : 'cont'
+            first = false
+          }
+        }
+      }
+    }
+    return map
+  }, [kennels, filteredBookings, days])
+
+  const unassigned = useMemo(
+    () => filteredBookings.filter(b => b.kennels.length === 0),
+    [filteredBookings]
   )
 
-  // ─── Conflict check ───────────────────────────────────────────────────────
-  function isKennelConflicted(kennelId: string, bookingId: string): boolean {
-    const dragged = bookings.find(b => b.id === bookingId)
-    if (!dragged) return false
-    return bookings.some(
-      b =>
-        b.id !== bookingId &&
-        b.kennels.some(k => k.id === kennelId) &&
-        b.start_date <= dragged.end_date &&
-        b.end_date >= dragged.start_date
-    )
+  // ── Modal helpers ──────────────────────────────────────────────────────────
+  function openBooking(b: BookingWithDetails) {
+    setModalBooking(b); setPrefilledKennelIds([]); setPrefilledStartDate(undefined); setIsModalOpen(true)
   }
-
-  // ─── Drop handler ─────────────────────────────────────────────────────────
-  async function handleDrop(kennelId: string, e: React.DragEvent) {
-    e.preventDefault()
-    const bookingId = e.dataTransfer.getData('bookingId')
-    if (!bookingId) return
-    setHoverKennelId(null)
-    setDraggingBookingId(null)
-    setAssignError(null)
-    setIsAssigning(true)
-    const result = await assignKennel(bookingId, kennelId)
-    setIsAssigning(false)
-    if (result.error) setAssignError(result.error)
-    router.refresh()
-  }
-
-  // ─── Modal helpers ────────────────────────────────────────────────────────
-  function openBookingDetail(booking: BookingWithDetails) {
-    setModalBooking(booking)
-    setPrefilledKennelIds(undefined)
-    setPrefilledStartDate(undefined)
-    setIsModalOpen(true)
-  }
-
   function openNewBooking(kennelId: string, date: string) {
-    setModalBooking(null)
-    setPrefilledKennelIds([kennelId])
-    setPrefilledStartDate(date)
-    setIsModalOpen(true)
+    setModalBooking(null); setPrefilledKennelIds([kennelId]); setPrefilledStartDate(date); setIsModalOpen(true)
+  }
+  function closeModal() { setIsModalOpen(false); setModalBooking(null) }
+
+  // ── Cell hover: direct DOM (avoids Tailwind group-hover Turbopack issues) ──
+  function onCellEnter(e: React.MouseEvent<HTMLButtonElement>) {
+    const el = e.currentTarget
+    el.style.backgroundColor = '#d1fae5'
+    el.style.borderColor     = '#6ee7b7'
+    const icon = el.querySelector<HTMLElement>('.ci')
+    if (icon) icon.style.opacity = '1'
+  }
+  function onCellLeave(e: React.MouseEvent<HTMLButtonElement>) {
+    const el = e.currentTarget
+    el.style.backgroundColor = ''
+    el.style.borderColor     = 'transparent'
+    const icon = el.querySelector<HTMLElement>('.ci')
+    if (icon) icon.style.opacity = '0'
   }
 
-  function closeModal() {
-    setIsModalOpen(false)
-    setModalBooking(null)
-    setPrefilledKennelIds(undefined)
-    setPrefilledStartDate(undefined)
-  }
+  const TABLE_W = KENNEL_COL_W + days.length * DAY_COL_W
 
+  // ─── Render ────────────────────────────────────────────────────────────────
+  //
+  // Why sticky works here:
+  //   main (overflow-y-auto, overflow-x-hidden) = vertical scroll container
+  //   ├── Toolbar div  sticky top-0 z-30  → sticks in main's vertical scroll
+  //   └── Grid div  overflow-x-auto       → horizontal scroll container
+  //       └── table
+  //           ├── thead  sticky top=toolbarH  (sticks in main, below toolbar)
+  //           └── tbody
+  //               └── td.kennel-col  sticky left=0  (sticks in overflow-x-auto)
+  //
+  // overflow-x-hidden on main prevents main from getting a horizontal scrollbar
+  // when the 7200px table causes horizontal overflow — so the toolbar never
+  // moves sideways.
   return (
     <>
-      {/* ─── Header (sticky) ──────────────────────────────────────────── */}
-      <div className="sticky top-0 z-20 px-8 py-4 border-b border-gray-200 bg-white flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gray-900">Belegungsplan</h1>
-        <div className="flex items-center gap-4">
-          {todayIdx !== -1 && (
-            <button
-              onClick={scrollToToday}
-              className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
-            >
-              Heute
-            </button>
-          )}
-          <div className="flex items-center gap-3 text-xs text-gray-500">
-            <span className="flex items-center gap-1.5">
-              <span className="inline-block h-3 w-3 rounded-sm bg-indigo-500" />
-              Übernachtung
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="inline-block h-3 w-3 rounded-sm bg-amber-500" />
-              Tagesbetreuung (flex.)
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="inline-block h-3 w-3 rounded-sm bg-green-500" />
-              Tagesbetreuung (regelm.)
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* ─── Error banner ─────────────────────────────────────────────── */}
-      {assignError && (
-        <div className="mx-8 mt-4 flex items-center justify-between rounded-md border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
-          <span>⚠ {assignError}</span>
-          <button onClick={() => setAssignError(null)} className="ml-4 text-red-400 hover:text-red-600">×</button>
-        </div>
-      )}
-
-      {/* ─── Unzugewiesene Buchungen Banner ───────────────────────────── */}
-      {unassigned.length > 0 && (
-        <div className="px-8 pt-4 pb-2">
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
-            Ohne Zwinger ({unassigned.length}) — ziehen um zuzuweisen
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {unassigned.map(b => {
-              const dogs = b.dogs.map(d => d.name)
-              const dogLabel =
-                dogs.length === 0 ? '' : dogs.length <= 2 ? dogs.join(', ') : `${dogs[0]} +${dogs.length - 1}`
-              const color = BANNER_COLORS[b.booking_type] ?? 'bg-gray-50 border-gray-200 text-gray-800'
-              const isDragging = draggingBookingId === b.id
-              const lastName = b.customer_name.split(' ').slice(-1)[0]
-              const fmtDate = (s: string) =>
-                new Date(s + 'T00:00:00Z').toLocaleDateString('de-DE', {
-                  day: '2-digit', month: '2-digit', timeZone: 'UTC',
-                })
-              const dateLabel =
-                b.start_date === b.end_date
-                  ? fmtDate(b.start_date)
-                  : `${fmtDate(b.start_date)}–${fmtDate(b.end_date)}`
-
+      {/* ── Toolbar — sticky at top of main's scroll viewport ──────────── */}
+      <div ref={toolbarRef} className="sticky top-0 z-30 bg-white border-b border-gray-200">
+        {/* Title + booking type filter legend */}
+        <div className="px-6 py-3 flex items-center justify-between">
+          <h1 className="text-xl font-bold text-gray-900">Belegungsplan</h1>
+          <div className="flex items-center gap-1">
+            {BOOKING_TYPES.map(({ value, label, dot }) => {
+              const active = filterType === value
               return (
-                <div
-                  key={b.id}
-                  draggable
-                  onDragStart={e => {
-                    e.dataTransfer.setData('bookingId', b.id)
-                    setDraggingBookingId(b.id)
-                  }}
-                  onDragEnd={() => {
-                    setDraggingBookingId(null)
-                    setHoverKennelId(null)
-                  }}
-                  className={`flex cursor-grab select-none items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium transition-opacity ${color} ${isDragging ? 'opacity-40' : ''}`}
-                  title="Ziehen um Zwinger zuzuweisen"
+                <button
+                  key={value}
+                  onClick={() => setFilterType(active ? 'all' : value)}
+                  className={`flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium border transition-colors ${
+                    active
+                      ? 'border-gray-400 bg-gray-100 text-gray-800'
+                      : 'border-transparent text-gray-500 hover:bg-gray-50 hover:border-gray-200'
+                  }`}
                 >
-                  <span className="text-gray-400">⠿</span>
-                  <span>{lastName}</span>
-                  {dogLabel && <span className="font-normal opacity-70">· {dogLabel}</span>}
-                  <span className="font-normal opacity-60">{dateLabel}</span>
-                </div>
+                  <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: dot }} />
+                  {label}
+                </button>
               )
             })}
           </div>
         </div>
+        {/* Search + Heute */}
+        <div className="px-6 pb-3 flex items-center gap-3">
+          <input
+            type="search"
+            placeholder="Kunde oder Hund suchen…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="h-9 rounded-md border border-gray-300 bg-white px-3 text-sm text-gray-900 placeholder-gray-400 focus:border-indigo-400 focus:outline-none focus:ring-1 focus:ring-indigo-400 w-56"
+          />
+          {search && (
+            <button onClick={() => setSearch('')} className="text-sm text-gray-500 hover:text-gray-700">
+              Zurücksetzen
+            </button>
+          )}
+          {todayIdx !== -1 && (
+            <button
+              onClick={scrollToToday}
+              className="h-9 rounded-md border border-gray-300 bg-white px-3 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+            >
+              Heute
+            </button>
+          )}
+          <button
+            onClick={() => setIsOverview(v => !v)}
+            className={`h-9 rounded-md border px-3 text-sm font-medium transition-colors ${
+              isOverview
+                ? 'border-gray-400 bg-gray-100 text-gray-800'
+                : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+            }`}
+          >
+            Überblick
+          </button>
+        </div>
+      </div>
+
+      {/* ── Unassigned bookings banner ────────────────────────────────────── */}
+      {unassigned.length > 0 && (
+        <div className="mx-6 mt-4 mb-2 rounded-md border border-amber-200 bg-amber-50 px-4 py-3">
+          <p className="text-sm font-medium text-amber-800 mb-2">
+            {unassigned.length} Buchung{unassigned.length !== 1 ? 'en' : ''} ohne Zwinger
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {unassigned.map(b => (
+              <button
+                key={b.id}
+                onClick={() => openBooking(b)}
+                className="rounded bg-amber-100 hover:bg-amber-200 border border-amber-300 px-2 py-1 text-xs text-amber-900 transition-colors"
+              >
+                {b.customer_name} · {b.dogs.map(d => d.name).join(', ')} · {b.start_date}
+              </button>
+            ))}
+          </div>
+        </div>
       )}
 
-      {/* ─── Table ────────────────────────────────────────────────────── */}
-      {kennels.length === 0 ? (
-        <div className="py-16 text-center text-sm italic text-gray-400">
-          Keine aktiven Zwinger vorhanden.
-        </div>
-      ) : (
-        /* Horizontal scroll container */
-        <div ref={containerRef} className="overflow-x-auto px-8 py-4">
-          <div className="rounded-lg border border-gray-200 bg-white" style={{ width: `${128 + TOTAL_DAYS * 88}px` }}>
-            <table className="w-full border-collapse text-sm">
+      {/* ── Grid ──────────────────────────────────────────────────────────────── */}
+      {/*                                                                        */}
+      {/* Two-div approach: sticky header + scrollable body, scrollLeft synced.  */}
+      {/* Avoids the CSS limitation where overflow-x:auto intercepts sticky top  */}
+      {/* on <thead>, making it impossible to stick below the toolbar.            */}
+      <div className="bg-gray-50">
 
-              {/* colgroup: today column background */}
-              <colgroup>
-                <col style={{ width: '128px' }} />
-                {days.map((day, i) => (
-                  <col
-                    key={day}
-                    style={{
-                      width: '88px',
-                      backgroundColor: i === todayIdx ? 'rgb(239 246 255)' : undefined,
-                    }}
-                  />
-                ))}
-              </colgroup>
-
-              <thead>
-                <tr className="border-b border-gray-200 bg-gray-50">
-                  <th className="sticky left-0 z-10 bg-gray-50 border-r border-gray-200 px-3 py-2 text-left text-xs font-semibold text-gray-500">
+        {/* ── Sticky date header (overflow-x hidden, scroll synced from body) ── */}
+        <div
+          ref={headerScrollRef}
+          className="sticky z-20 overflow-x-hidden bg-white border-b border-gray-200 shadow-sm"
+          style={{ top: toolbarH }}
+        >
+          <table className="border-collapse text-xs" style={{ width: TABLE_W }}>
+            {colgroup}
+            <thead>
+              <tr>
+                <th
+                  className="border-r border-gray-200 bg-gray-50 text-left"
+                  style={{ width: KENNEL_COL_W, position: 'sticky', left: 0, zIndex: 10 }}
+                >
+                  <div className="px-3 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wide">
                     Zwinger
-                  </th>
-                  {days.map((day, i) => {
-                    const { weekday, date } = formatDayHeader(day)
-                    const isToday = i === todayIdx
-                    return (
-                      <th
-                        key={day}
-                        ref={isToday ? todayThRef : undefined}
-                        className={`px-1 py-1.5 text-center text-xs ${
-                          isToday ? 'text-blue-700 font-semibold' : 'text-gray-500 font-medium'
-                        }`}
-                      >
-                        <div>{weekday}</div>
-                        <div className={isToday ? 'font-bold' : 'font-normal'}>{date}</div>
-                      </th>
-                    )
-                  })}
-                </tr>
-              </thead>
+                  </div>
+                </th>
+                {days.map((d, i) => {
+                  const { weekday, day, month, isWeekend } = dayInfo(d)
+                  const isToday     = i === todayIdx
+                  const isFeiertag  = !isWeekend && FEIERTAGE_NDS.has(d)
+                  const isSchulfrei = !isWeekend && !isFeiertag && isSchulferienTag(d)
+                  const thBg =
+                    isToday     ? '#fb923c' :
+                    isFeiertag  ? '#1B5E20' :
+                    isSchulfrei ? '#68B300' :
+                    isWeekend   ? '#f3f4f6' : '#ffffff'
+                  const textWhite = isToday || isFeiertag || isSchulfrei
+                  return (
+                    <th
+                      key={d}
+                      style={{ width: DAY_COL_W, backgroundColor: thBg }}
+                      className="border-r border-gray-200 text-center"
+                    >
+                      <div className={isOverview ? 'py-0.5' : 'py-1.5'}>
+                        <div className={`font-bold leading-none ${isOverview ? 'text-[9px]' : 'text-sm'} ${
+                          textWhite ? 'text-white' : 'text-gray-800'
+                        }`}>
+                          {String(day).padStart(2, '0')}.{month}.
+                        </div>
+                        {!isOverview && (
+                          <div className={`text-[10px] leading-none mt-0.5 ${
+                            textWhite ? 'text-white' : isWeekend ? 'text-gray-500' : 'text-gray-400'
+                          }`}>
+                            {weekday}
+                          </div>
+                        )}
+                      </div>
+                    </th>
+                  )
+                })}
+              </tr>
+            </thead>
+          </table>
+        </div>
 
+        {/* ── Scrollable body ───────────────────────────────────────────────── */}
+        <div ref={containerRef} onScroll={onBodyScroll} className="overflow-x-auto pb-4">
+          <div className="bg-white shadow-sm" style={{ width: TABLE_W }}>
+            <table className="border-collapse text-xs" style={{ width: TABLE_W }}>
+              {colgroup}
               <tbody>
-                {kennels.map((kennel, rowIdx) => {
-                  const cells = computeKennelCells(kennel, bookings, days)
-                  const isDropTarget = draggingBookingId !== null && hoverKennelId === kennel.id
-                  const hasConflict =
-                    draggingBookingId !== null && isKennelConflicted(kennel.id, draggingBookingId)
+                {kennels.map(kennel => {
+                  const cells: React.ReactNode[] = []
+                  let i = 0
+
+                  while (i < days.length) {
+                    const day     = days[i]
+                    const cell    = gridMap[kennel.id]?.[day]
+                    const isToday = i === todayIdx
+
+                    const isWeekend   = dayInfo(day).isWeekend
+                    const isFeiertag  = !isWeekend && FEIERTAGE_NDS.has(day)
+                    const isSchulfrei = !isWeekend && !isFeiertag && isSchulferienTag(day)
+
+                    if (!cell) {
+                      const kId = kennel.id
+                      const dt  = day
+                      const cellBg =
+                        isToday     ? 'rgb(255 237 213)' :
+                        isFeiertag  ? '#e8f5e9' :
+                        isSchulfrei ? '#f1f8e9' :
+                        isWeekend   ? 'rgb(243 244 246)' : undefined
+                      cells.push(
+                        <td
+                          key={day}
+                          className="border-r border-b border-gray-100 p-0.5"
+                          style={{ width: DAY_COL_W, backgroundColor: cellBg }}
+                        >
+                          <button
+                            onClick={() => openNewBooking(kId, dt)}
+                            onMouseEnter={onCellEnter}
+                            onMouseLeave={onCellLeave}
+                            className={`w-full ${isOverview ? 'h-5' : 'h-10'} rounded flex items-center justify-center`}
+                            style={{ border: '1px solid transparent', transition: 'background-color 0.1s' }}
+                          >
+                            {!isOverview && (
+                              <span
+                                className="ci select-none text-gray-400 text-base leading-none"
+                                style={{ opacity: 0, pointerEvents: 'none', transition: 'opacity 0.1s' }}
+                              >
+                                +
+                              </span>
+                            )}
+                          </button>
+                        </td>
+                      )
+                      i++
+
+                    } else if (cell === 'cont') {
+                      i++
+
+                    } else {
+                      const booking = cell
+                      const endMs   = msFromIso(booking.end_date)
+                      let colSpan   = 1
+                      for (let j = i + 1; j < days.length; j++) {
+                        if (msFromIso(days[j]) <= endMs) colSpan++
+                        else break
+                      }
+
+                      const typeConfig   = BOOKING_TYPES.find(t => t.value === booking.booking_type)
+                      const bg           = typeConfig?.bg   ?? '#e5e7eb'
+                      const textColor    = typeConfig?.text ?? '#374151'
+                      const bookedCellBg =
+                        isToday     ? 'rgb(255 237 213)' :
+                        isFeiertag  ? '#e8f5e9' :
+                        isSchulfrei ? '#f1f8e9' :
+                        isWeekend   ? 'rgb(243 244 246)' : undefined
+
+                      cells.push(
+                        <td
+                          key={day}
+                          colSpan={colSpan}
+                          className="border-r border-b border-gray-100 p-0.5"
+                          style={{ backgroundColor: bookedCellBg }}
+                        >
+                          <button
+                            onClick={() => openBooking(booking)}
+                            className={`w-full rounded text-left overflow-hidden hover:opacity-75 transition-opacity ${
+                              isOverview
+                                ? 'h-5 px-1 flex items-center'
+                                : 'h-12 px-2 flex flex-col justify-center'
+                            }`}
+                            style={{ backgroundColor: bg, color: textColor }}
+                            title={`${booking.customer_name} · ${booking.dogs.map(d => d.name).join(', ')} · ${booking.start_date} – ${booking.end_date}`}
+                          >
+                            {isOverview ? (
+                              <span className="block truncate text-[9px] font-semibold leading-none w-full">
+                                {booking.customer_name.split(' ').at(-1)}
+                              </span>
+                            ) : (
+                              <>
+                                <span className="block truncate text-xs font-semibold leading-tight">
+                                  {booking.customer_name.split(' ').at(-1)}
+                                </span>
+                                <span className="block truncate text-[10px] opacity-70 leading-tight">
+                                  {booking.dogs.map(d => d.name).join(', ')}
+                                </span>
+                                <span className="block truncate text-[10px] opacity-55 leading-tight">
+                                  {formatDate(booking.start_date)}–{formatDate(booking.end_date)}
+                                </span>
+                              </>
+                            )}
+                          </button>
+                        </td>
+                      )
+                      i += colSpan
+                    }
+                  }
 
                   return (
-                    <tr
-                      key={kennel.id}
-                      className={`border-b border-gray-100 last:border-0 transition-colors ${
-                        isDropTarget ? (hasConflict ? 'bg-red-50' : 'bg-green-50') : ''
-                      }`}
-                      onDragOver={e => { e.preventDefault(); setHoverKennelId(kennel.id) }}
-                      onDragLeave={e => {
-                        if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-                          setHoverKennelId(null)
-                        }
-                      }}
-                      onDrop={e => handleDrop(kennel.id, e)}
-                    >
-                      {/* Sticky kennel label */}
+                    <tr key={kennel.id} className="bg-white">
                       <td
-                        className={`sticky left-0 z-10 border-r border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700 whitespace-nowrap ${
-                          rowIdx % 2 === 1 ? 'bg-gray-50' : 'bg-white'
-                        }`}
+                        className="border-r border-b border-gray-200 bg-white"
+                        style={{ position: 'sticky', left: 0, zIndex: 5 }}
                       >
-                        Zwinger {kennel.number}
+                        <div className={`px-3 ${isOverview ? 'py-1' : 'py-2'} flex items-center gap-1.5`}>
+                          <span className="font-semibold text-gray-700 text-sm">{kennel.number}</span>
+                          {kennel.size && (
+                            <span className="text-[10px] text-gray-400 uppercase">{kennel.size}</span>
+                          )}
+                          {kennel.has_heating && (
+                            <span className="text-orange-400 text-[10px]" title="Beheizt">♨</span>
+                          )}
+                        </div>
                       </td>
-
-                      {cells.map((cell, cellIdx) => {
-                        if (cell.type === 'booking') {
-                          const b = cell.booking
-                          const dogs = b.dogs.map(d => d.name)
-                          const dogLabel =
-                            dogs.length === 0 ? null
-                            : dogs.length <= 2 ? dogs.join(', ')
-                            : `${dogs[0]} +${dogs.length - 1}`
-                          const lastName = b.customer_name.split(' ').slice(-1)[0]
-                          const color = SLOT_COLORS[b.booking_type] ?? 'bg-gray-400 text-white hover:bg-gray-500'
-                          const roundingClass =
-                            cell.isStart && cell.isEnd ? 'rounded' :
-                            cell.isStart ? 'rounded-l rounded-r-none' :
-                            cell.isEnd ? 'rounded-r rounded-l-none' : 'rounded-none'
-
-                          return (
-                            <td key={cellIdx} colSpan={cell.span} className="p-0.5 align-top">
-                              <button
-                                onClick={() => openBookingDetail(b)}
-                                title={`${b.customer_name}${dogs.length > 0 ? ' · ' + dogs.join(', ') : ''} · ${b.start_date} – ${b.end_date}`}
-                                className={`h-11 w-full px-2 text-left transition-colors ${color} ${roundingClass}`}
-                              >
-                                <div className="truncate text-xs font-semibold leading-tight">{lastName}</div>
-                                {dogLabel && (
-                                  <div className="truncate text-xs font-normal opacity-80 leading-tight">{dogLabel}</div>
-                                )}
-                              </button>
-                            </td>
-                          )
-                        }
-
-                        return (
-                          <td key={cellIdx} className="p-0.5 align-top">
-                            <button
-                              onClick={() => openNewBooking(cell.kennelId, cell.date)}
-                              className="h-11 w-full rounded border border-transparent hover:border-gray-300 hover:bg-gray-50 transition-colors"
-                              aria-label={`Neue Buchung für Zwinger ${kennel.number} ab ${cell.date}`}
-                            />
-                          </td>
-                        )
-                      })}
+                      {cells}
                     </tr>
                   )
                 })}
@@ -422,18 +522,9 @@ export default function BelegungsplanClient({
             </table>
           </div>
         </div>
-      )}
+      </div>
 
-      {/* ─── Zuweisen-Overlay ──────────────────────────────────────────── */}
-      {isAssigning && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/20">
-          <div className="rounded-lg bg-white px-6 py-4 shadow-xl text-sm text-gray-700">
-            Zwinger wird zugewiesen…
-          </div>
-        </div>
-      )}
-
-      {/* ─── Buchungs-Modal ────────────────────────────────────────────── */}
+      {/* ── Booking modal ──────────────────────────────────────────────────── */}
       <BuchungsModal
         booking={modalBooking}
         isOpen={isModalOpen}

@@ -18,7 +18,8 @@
 | PROJ-4 | Preiseinstellungen | Deployed | — | — |
 | PROJ-5 | Belegungsplan | In Progress | [PROJ-5-belegungsplan.md](PROJ-5-belegungsplan.md) | 2026-03-04 |
 | PROJ-6 | Dashboard | Deployed | [PROJ-6-dashboard.md](PROJ-6-dashboard.md) | — |
+| PROJ-7 | Reporting-Dashboard | In Review | [PROJ-7-reporting.md](PROJ-7-reporting.md) | 2026-03-06 |
 
 <!-- Add features above this line -->
 
-## Next Available ID: PROJ-7
+## Next Available ID: PROJ-8
