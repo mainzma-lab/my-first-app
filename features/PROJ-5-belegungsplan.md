@@ -1,8 +1,8 @@
 # PROJ-5: Belegungsplan
 
-## Status: Planned
+## Status: In Review
 **Created:** 2026-03-04
-**Last Updated:** 2026-03-04
+**Last Updated:** 2026-03-06
 
 ## Dependencies
 - Requires: PROJ-1 (Authentifizierung) — geschützte Route
@@ -206,7 +206,191 @@ Alle benötigten Technologien sind bereits installiert:
 - React (Browser-Komponente, State für Drag & Drop)
 
 ## QA Test Results
-_To be added by /qa_
+
+**Tested:** 2026-03-06
+**App URL:** http://localhost:3000/belegungsplan
+**Tester:** QA Engineer (AI) — Code Review + Static Analysis
+
+### Acceptance Criteria Status
+
+#### AC-1: Belegungsraster
+
+- [x] Route `/belegungsplan` ist vorhanden (`page.tsx` Server Component + `BelegungsplanClient.tsx`)
+- [x] Raster: Zeilen = Zwinger (alle aktiven, sortiert nach Nummer), Spalten = Tage
+- [ ] **BUG-1:** Standardansicht startet NICHT mit 14 Tagen ab heute, sondern mit 90 Tagen (heute-14 bis heute+75). Die Spec fordert "14 Tage ab Startdatum", die Implementierung zeigt 90 Tage mit Scroll-to-today. Dies ist eine bewusste Design-Abweichung (bessere UX), aber weicht von der Spec ab.
+- [x] Spaltenkoepfe zeigen Wochentag + Datum (z.B. "Mi 18.03.")
+- [x] Heutiger Tag ist visuell hervorgehoben (orange Hintergrund `#fb923c` im Header + `rgb(255 237 213)` in Zellen)
+- [x] Freie Slots sind als leere, klickbare Felder erkennbar (gruener Hover-Effekt mit `+` Icon)
+
+#### AC-2: Buchungs-Slots (belegte Felder)
+
+- [x] Jede Buchung erscheint als farbiger Block ueber alle belegten Tage (`colSpan`)
+- [x] Farbkodierung nach Buchungstyp: `uebernachtung` -> Indigo (#c7d2fe), `tagesbetreuung_flexibel` -> Bernstein (#fde68a), `tagesbetreuung_regelmaessig` -> Gruen (#a7f3d0)
+- [x] Slot zeigt: Nachname des Kunden + Hundename(n) (mit Ellipsis bei Platzmangel via `truncate`)
+- [x] Rounded corners auf Booking-Buttons
+- [x] Hover ueber Slot zeigt Tooltip via `title` Attribut: Name, Hunde, Zeitraum
+
+#### AC-3: Warnung: Unzugewiesene Buchungen
+
+- [x] Banner oben im Plan zeigt alle Buchungen ohne Zwingerzuweisung
+- [x] Banner zeigt: Kundenname, Hund(e), Zeitraum als horizontale Karten
+- [ ] **BUG-2:** Karten sind NICHT als Drag-Quellen markiert (kein Drag-Handle). Die Karten nutzen `onClick` zum Oeffnen des Buchungsmodals statt Drag & Drop. Drag & Drop wurde bewusst nicht implementiert (kein `draggable`, kein `onDragStart`).
+- [x] Banner ist ausgeblendet, wenn keine unzugewiesenen Buchungen existieren
+
+#### AC-4: Drag & Drop -- Zwingerzuweisung
+
+- [ ] **BUG-3 (HIGH):** Drag & Drop ist NICHT implementiert. Keine `draggable`, `onDragStart`, `onDragOver`, `onDrop` Handler existieren im Code. Die gesamte Drag & Drop Funktionalitaet fehlt. Stattdessen oeffnen Klicks auf unzugewiesene Buchungen das Buchungsmodal zur manuellen Zwingerzuweisung.
+- [ ] Waehrend des Dragens: belegte Slots rot, freie gruen -> NICHT IMPLEMENTIERT
+- [ ] Drop auf freiem Slot -> kennel_id speichern -> NICHT IMPLEMENTIERT (die `assignKennel` Server Action existiert, wird aber nie aufgerufen)
+- [ ] Drop ueber mehrere Tage -> NICHT IMPLEMENTIERT
+- [ ] Bei Konflikt (Race Condition): Fehlermeldung -> NICHT TESTBAR (kein Drop)
+
+#### AC-5: Klick auf freien Slot -> Neue Buchung
+
+- [x] Klick auf freien Slot oeffnet das Buchungs-Modal (`openNewBooking`)
+- [x] Zwinger-ID ist im Modal vorausgefuellt (`prefilledKennelIds`)
+- [x] Startdatum ist im Modal vorausgefuellt (`prefilledStartDate`)
+- [x] Enddatum ist nicht vorausgefuellt (korrekt)
+
+#### AC-6: Klick auf belegten Slot -> Buchungsdetail
+
+- [x] Klick auf belegten Slot oeffnet das bestehende Buchungsdetail-Modal (`openBooking`)
+- [x] Im Modal kann Buchung wie gewohnt bearbeitet werden
+
+#### AC-7: Navigation
+
+- [ ] **BUG-4 (HIGH):** Buttons "Zurueck" und "Weiter" fehlen komplett. Die Spec fordert Navigation um 14 Tage vor/zurueck via URL-Parameter `?from=`. Die Implementierung laedt stattdessen alle 90 Tage auf einmal und bietet nur horizontales Scrollen.
+- [x] Button "Heute" springt zur heutigen Spalte (per `scrollToToday`)
+- [ ] **BUG-5:** Aktuell angezeigter Zeitraum ist NICHT im Header lesbar. Es gibt keine "04.03.2026 -- 17.03.2026" Anzeige. Stattdessen wird ein generischer "Belegungsplan" Titel gezeigt.
+
+### Edge Cases Status
+
+#### EC-1: Buchung ohne Hund
+- [x] Slot zeigt nur Kundennamen, Hundezeile bleibt leer (korrekt, `.map(d => d.name).join(', ')` ergibt leeren String)
+
+#### EC-2: Mehrere Hunde
+- [x] Namen durch Komma getrennt mit `truncate` bei Platzmangel. Allerdings fehlt die Spec-Anforderung "Bello +2" Kurzform -- es wird immer die volle Liste mit Truncation gezeigt. Akzeptabel.
+
+#### EC-3: Buchung ueber Monatsgrenze
+- [x] Korrekt dargestellt (colSpan berechnet via Datumsvergleich, unabhaengig von Monaten)
+
+#### EC-4: Gleichzeitig zwei Buchungen im selben Zwinger (Datenfehler)
+- [ ] **BUG-6 (MEDIUM):** Konflikte werden NICHT rot markiert. Der `gridMap` ueberschreibt bei Konflikten die erste Buchung mit der zweiten (last-write-wins). Nur die zuletzt iterierte Buchung wird angezeigt, die erste verschwindet ohne Warnung.
+
+#### EC-5: Kein aktiver Zwinger
+- [ ] **BUG-7 (LOW):** Leere Tabelle wird angezeigt, aber ohne den geforderten Hinweis "Keine aktiven Zwinger vorhanden". Es wird einfach ein leerer tbody gerendert.
+
+#### EC-6: Alle Zwinger voll
+- [x] Banner mit unzugewiesenen Buchungen bleibt sichtbar (korrekt)
+
+#### EC-7: Race Condition beim Drop
+- [x] Server-seitig korrekt implementiert: `assignKennel` prueft via `check_kennel_availability` und gibt Fehler zurueck. Allerdings mangels Drag & Drop UI nicht erreichbar.
+
+#### EC-8: Drag auf mobile
+- [x] Out-of-Scope per Spec, kein D&D implementiert. Buchungs-Modal bleibt nutzbar.
+
+### Additional Findings (nicht in Spec)
+
+- [x] **Bonus:** Ueberblick-Modus (kompaktere Ansicht) implementiert -- nicht in Spec gefordert, aber gute UX-Erweiterung
+- [x] **Bonus:** Suchfilter fuer Kunden/Hunde implementiert -- nicht in Spec gefordert
+- [x] **Bonus:** Buchungstyp-Filter als farbige Legende-Buttons -- nicht in Spec gefordert
+- [x] **Bonus:** Feiertage (Niedersachsen) und Schulferien farblich markiert -- nicht in Spec gefordert
+- [x] **Bonus:** Wochenenden grau hinterlegt -- gute UX
+
+### Security Audit Results
+
+- [x] Authentication: Route ist durch `(app)/layout.tsx` geschuetzt, das `supabase.auth.getUser()` prueft und bei fehlender Session nach `/login` redirected
+- [x] Authorization: RLS auf `booking_kennels` aktiviert mit Policies fuer authenticated users
+- [x] Input validation: `assignKennel` prueft Buchung-Existenz und Zwinger-Verfuegbarkeit serverseitig
+- [ ] **BUG-8 (MEDIUM):** `assignKennel` Server Action validiert NICHT, ob `bookingId` und `kennelId` gueltige UUIDs sind. Beliebige Strings werden direkt an Supabase weitergegeben. Supabase wuerde zwar einen DB-Fehler werfen, aber saubere Validierung fehlt.
+- [x] SQL Injection: Geschuetzt durch Supabase Parameterized Queries
+- [x] XSS: Kein `dangerouslySetInnerHTML`, React escaped Output automatisch
+- [x] Keine Secrets im Client-Code exponiert
+
+### Regression Check
+
+- [x] BuchungsModal aus PROJ-3 wird korrekt wiederverwendet mit erweiterten Props (`prefilledKennelIds`, `prefilledStartDate`)
+- [x] Sidebar korrekt erweitert mit `/belegungsplan` Link
+- [x] `onSaved`/`onStatusChanged`/`onCancelled` Callbacks triggern `router.refresh()` korrekt
+- [x] Buchungsliste (`/buchungen`) wird via `revalidatePath` in `assignKennel` mitaktualisiert
+
+### Bugs Found
+
+#### BUG-1: 90-Tage-Fenster statt 14-Tage-Ansicht
+- **Severity:** Low
+- **Steps to Reproduce:**
+  1. Go to `/belegungsplan`
+  2. Expected: 14-Tage-Ansicht ab heute mit Vor/Zurueck-Navigation
+  3. Actual: 90-Tage-Fenster mit horizontalem Scroll
+- **Priority:** Nice to have (aktuelle Loesung ist funktional besser als Spec)
+
+#### BUG-2: Unzugewiesene Buchungskarten nicht draggable
+- **Severity:** Low (weil BUG-3 die gesamte D&D-Funktionalitaet abdeckt)
+- **Steps to Reproduce:**
+  1. Buchung ohne Zwinger erstellen
+  2. Banner-Karte versuchen zu ziehen
+  3. Expected: Karte ist draggable
+  4. Actual: Karte oeffnet Buchungsmodal per Klick
+- **Priority:** Fix before deployment (Teil von BUG-3)
+
+#### BUG-3: Drag & Drop komplett fehlend
+- **Severity:** High
+- **Steps to Reproduce:**
+  1. Go to `/belegungsplan`
+  2. Buchung ohne Zwinger vorhanden
+  3. Versuche Banner-Karte auf freien Slot zu ziehen
+  4. Expected: Drag & Drop Zwingerzuweisung
+  5. Actual: Kein Drag & Drop, nur Klick -> Modal
+- **Priority:** Fix before deployment
+
+#### BUG-4: Navigation Buttons (Zurueck/Weiter) fehlen
+- **Severity:** High
+- **Steps to Reproduce:**
+  1. Go to `/belegungsplan`
+  2. Expected: Buttons "Zurueck" und "Weiter" fuer 14-Tage-Navigation
+  3. Actual: Nur "Heute"-Button und horizontales Scrollen
+- **Priority:** Fix before deployment (Alternativ: Spec-Anpassung wenn 90-Tage-Scroll akzeptabel)
+
+#### BUG-5: Zeitraum-Anzeige im Header fehlt
+- **Severity:** Medium
+- **Steps to Reproduce:**
+  1. Go to `/belegungsplan`
+  2. Expected: Header zeigt "04.03.2026 -- 17.03.2026"
+  3. Actual: Header zeigt nur "Belegungsplan"
+- **Priority:** Fix before deployment
+
+#### BUG-6: Doppelbelegung wird nicht als Konflikt angezeigt
+- **Severity:** Medium
+- **Steps to Reproduce:**
+  1. Zwei Buchungen mit demselben Zwinger und ueberlappenden Zeitraeumen in der DB haben
+  2. Expected: Beide Slots sichtbar, zweiter mit rotem Rand als Konflikt markiert
+  3. Actual: Nur die zuletzt iterierte Buchung wird angezeigt, die andere verschwindet
+- **Priority:** Fix in next sprint
+
+#### BUG-7: Fehlender Hinweis bei keinen aktiven Zwingern
+- **Severity:** Low
+- **Steps to Reproduce:**
+  1. Alle Zwinger deaktivieren
+  2. Go to `/belegungsplan`
+  3. Expected: Hinweis "Keine aktiven Zwinger vorhanden"
+  4. Actual: Leere Tabelle ohne Erklaerung
+- **Priority:** Nice to have
+
+#### BUG-8: Fehlende UUID-Validierung in assignKennel
+- **Severity:** Medium
+- **Steps to Reproduce:**
+  1. `assignKennel('not-a-uuid', 'also-not-a-uuid')` aufrufen
+  2. Expected: Validierungsfehler
+  3. Actual: Anfrage geht direkt an Supabase, DB wirft Fehler statt saubere Validierung
+- **Priority:** Fix in next sprint
+
+### Summary
+
+- **Acceptance Criteria:** 14/23 passed (9 failed -- hauptsaechlich wegen fehlendem Drag & Drop und Navigation)
+- **Bugs Found:** 8 total (0 critical, 2 high, 3 medium, 3 low)
+- **Security:** Grundlegend abgesichert (Auth, RLS, XSS/SQLi geschuetzt). UUID-Validierung fehlt in Server Action.
+- **Production Ready:** NO
+- **Recommendation:** Die 2 High-Severity Bugs (Drag & Drop, Navigation) muessen vor dem Deployment geloest werden. Die Medium-Bugs (Zeitraum-Anzeige, Doppelbelegung, UUID-Validierung) sollten ebenfalls behoben werden. Die Basisansicht (Raster, Farbkodierung, Buchungs-Modal-Integration, Filtering) funktioniert sehr gut.
 
 ## Deployment
 _To be added by /deploy_
