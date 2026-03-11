@@ -17,6 +17,7 @@ const ADMIN_NAV_ITEMS = [
   { href: '/einstellungen/benutzer', label: 'Benutzerverwaltung' },
   { href: '/einstellungen/preise', label: 'Preise' },
   { href: '/einstellungen/crm', label: 'CRM Einstellungen' },
+  { href: '/einstellungen/import', label: 'Datenimport' },
 ]
 
 export default function Sidebar() {

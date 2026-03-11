@@ -4,6 +4,9 @@ import { createClient } from '@/lib/supabase/server'
 import { revalidatePath } from 'next/cache'
 import type { BookingWithDetails, Kennel } from '../buchungen/actions'
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+function isUUID(s: string) { return UUID_RE.test(s) }
+
 function mapBookingRow(b: Record<string, unknown>): BookingWithDetails {
   const customer = b.customers as { first_name_1: string; last_name_1: string } | null
   const bookingDogs = (b.booking_dogs as { dogs: { id: string; name: string } | null }[] | null) ?? []
@@ -76,6 +79,8 @@ export async function assignKennel(
   bookingId: string,
   kennelId: string
 ): Promise<{ error: string | null }> {
+  if (!isUUID(bookingId) || !isUUID(kennelId)) return { error: 'Ungültige Parameter.' }
+
   const supabase = await createClient()
 
   const { data: booking } = await supabase
@@ -102,6 +107,100 @@ export async function assignKennel(
     .insert({ booking_id: bookingId, kennel_id: kennelId })
 
   if (error) return { error: 'Fehler beim Zuweisen des Zwingers.' }
+
+  revalidatePath('/belegungsplan')
+  revalidatePath('/buchungen')
+  return { error: null }
+}
+
+export async function moveBooking(
+  bookingId: string,
+  oldKennelId: string,
+  newKennelId: string,
+  newStartDate: string,
+): Promise<{ error: string | null }> {
+  if (!isUUID(bookingId) || !isUUID(oldKennelId) || !isUUID(newKennelId)) return { error: 'Ungültige Parameter.' }
+
+  const supabase = await createClient()
+
+  const { data: booking } = await supabase
+    .from('bookings')
+    .select('start_date, end_date')
+    .eq('id', bookingId)
+    .single()
+
+  if (!booking) return { error: 'Buchung nicht gefunden.' }
+
+  // Preserve duration
+  const [sy, sm, sd] = booking.start_date.split('-').map(Number)
+  const [ey, em, ed] = booking.end_date.split('-').map(Number)
+  const durationDays = Math.round((Date.UTC(ey, em - 1, ed) - Date.UTC(sy, sm - 1, sd)) / 86_400_000)
+  const [nsy, nsm, nsd] = newStartDate.split('-').map(Number)
+  const newEndDate = new Date(Date.UTC(nsy, nsm - 1, nsd + durationDays)).toISOString().split('T')[0]
+
+  const { data: available } = await supabase.rpc('check_kennel_availability', {
+    p_kennel_id: newKennelId,
+    p_start_date: newStartDate,
+    p_end_date: newEndDate,
+    p_exclude_booking_id: bookingId,
+  })
+
+  if (!available) return { error: 'Dieser Zwinger ist für den gewählten Zeitraum bereits belegt.' }
+
+  const { error: updateError } = await supabase
+    .from('bookings')
+    .update({ start_date: newStartDate, end_date: newEndDate })
+    .eq('id', bookingId)
+
+  if (updateError) return { error: 'Fehler beim Verschieben der Buchung.' }
+
+  if (oldKennelId !== newKennelId) {
+    await supabase.from('booking_kennels').delete().eq('booking_id', bookingId).eq('kennel_id', oldKennelId)
+    const { error: kennelError } = await supabase
+      .from('booking_kennels')
+      .insert({ booking_id: bookingId, kennel_id: newKennelId })
+    if (kennelError) return { error: 'Fehler beim Zuweisen des Zwingers.' }
+  }
+
+  revalidatePath('/belegungsplan')
+  revalidatePath('/buchungen')
+  return { error: null }
+}
+
+export async function resizeBooking(
+  bookingId: string,
+  newStartDate: string,
+  newEndDate: string,
+): Promise<{ error: string | null }> {
+  if (!isUUID(bookingId)) return { error: 'Ungültige Parameter.' }
+
+  const supabase = await createClient()
+
+  if (new Date(newStartDate) > new Date(newEndDate)) {
+    return { error: 'Das Startdatum darf nicht nach dem Enddatum liegen.' }
+  }
+
+  const { data: kennelAssignments } = await supabase
+    .from('booking_kennels')
+    .select('kennel_id')
+    .eq('booking_id', bookingId)
+
+  for (const { kennel_id } of kennelAssignments ?? []) {
+    const { data: available } = await supabase.rpc('check_kennel_availability', {
+      p_kennel_id: kennel_id,
+      p_start_date: newStartDate,
+      p_end_date: newEndDate,
+      p_exclude_booking_id: bookingId,
+    })
+    if (!available) return { error: 'Zwinger ist für den gewählten Zeitraum bereits belegt.' }
+  }
+
+  const { error } = await supabase
+    .from('bookings')
+    .update({ start_date: newStartDate, end_date: newEndDate })
+    .eq('id', bookingId)
+
+  if (error) return { error: 'Fehler beim Anpassen des Zeitraums.' }
 
   revalidatePath('/belegungsplan')
   revalidatePath('/buchungen')

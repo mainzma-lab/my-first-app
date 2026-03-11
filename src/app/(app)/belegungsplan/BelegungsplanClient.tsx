@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import type { BookingWithDetails, Kennel, CustomerForAutocomplete } from '../buchungen/actions'
+import { assignKennel, moveBooking, resizeBooking } from './actions'
 import BuchungsModal from '../buchungen/BuchungsModal'
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
@@ -20,6 +21,13 @@ const BOOKING_TYPES = [
 type FilterType = 'all' | typeof BOOKING_TYPES[number]['value']
 
 const WEEKDAYS = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa']
+
+// ─── Drag operation types ──────────────────────────────────────────────────────
+type DragOp =
+  | { kind: 'unassigned'; bookingId: string }
+  | { kind: 'move'; bookingId: string; dayOffset: number; oldKennelId: string }
+  | { kind: 'resize-start'; bookingId: string; kennelId: string }
+  | { kind: 'resize-end'; bookingId: string; kennelId: string }
 
 // ─── Niedersachsen: gesetzliche Feiertage ─────────────────────────────────────
 const FEIERTAGE_NDS = new Set([
@@ -84,6 +92,10 @@ function formatDate(iso: string): string {
   const [, m, d] = iso.split('-').map(Number)
   return `${String(d).padStart(2, '0')}.${String(m).padStart(2, '0')}.`
 }
+function formatDateFull(iso: string): string {
+  const [y, m, d] = iso.split('-').map(Number)
+  return `${String(d).padStart(2, '0')}.${String(m).padStart(2, '0')}.${y}`
+}
 function isSchulferienTag(iso: string): boolean {
   const ms = msFromIso(iso)
   return SCHULFERIEN_NDS.some(([s, e]) => ms >= msFromIso(s) && ms <= msFromIso(e))
@@ -113,6 +125,8 @@ export default function BelegungsplanClient({ kennels, bookings, allActiveCustom
   const [isModalOpen, setIsModalOpen]             = useState(false)
   const [prefilledKennelIds, setPrefilledKennelIds] = useState<string[]>([])
   const [prefilledStartDate, setPrefilledStartDate] = useState<string | undefined>()
+  const [dragOp, setDragOp] = useState<DragOp | null>(null)
+  const [dropError, setDropError] = useState<string | null>(null)
 
   // ── Day list ───────────────────────────────────────────────────────────────
   const days = useMemo<string[]>(() => {
@@ -191,6 +205,35 @@ export default function BelegungsplanClient({ kennels, bookings, allActiveCustom
     return map
   }, [kennels, filteredBookings, days])
 
+  // ── Conflict detection: kennelId → Set of bookingIds with overlapping entries ─
+  const conflictBookingIds = useMemo(() => {
+    const visited: Record<string, Record<string, string>> = {}
+    const conflicts: Record<string, Set<string>> = {}
+    for (const k of kennels) { visited[k.id] = {}; conflicts[k.id] = new Set() }
+
+    for (const b of filteredBookings) {
+      for (const k of b.kennels) {
+        if (!visited[k.id]) continue
+        const startMs = msFromIso(b.start_date)
+        const endMs   = msFromIso(b.end_date)
+        for (let i = 0; i < days.length; i++) {
+          const day   = days[i]
+          const dayMs = msFromIso(day)
+          if (dayMs >= startMs && dayMs <= endMs) {
+            const existing = visited[k.id][day]
+            if (existing && existing !== b.id) {
+              conflicts[k.id].add(b.id)
+              conflicts[k.id].add(existing)
+            } else {
+              visited[k.id][day] = b.id
+            }
+          }
+        }
+      }
+    }
+    return conflicts
+  }, [kennels, filteredBookings, days])
+
   const unassigned = useMemo(
     () => filteredBookings.filter(b => b.kennels.length === 0),
     [filteredBookings]
@@ -204,6 +247,46 @@ export default function BelegungsplanClient({ kennels, bookings, allActiveCustom
     setModalBooking(null); setPrefilledKennelIds([kennelId]); setPrefilledStartDate(date); setIsModalOpen(true)
   }
   function closeModal() { setIsModalOpen(false); setModalBooking(null) }
+
+  function getDropDate(e: React.DragEvent): string {
+    const scrollLeft = containerRef.current?.scrollLeft ?? 0
+    const containerLeft = containerRef.current?.getBoundingClientRect().left ?? 0
+    const dayIndex = Math.max(0, Math.min(
+      Math.floor((e.clientX - containerLeft - KENNEL_COL_W + scrollLeft) / DAY_COL_W),
+      days.length - 1
+    ))
+    return days[dayIndex]
+  }
+
+  async function handleDrop(e: React.DragEvent, targetKennelId: string) {
+    e.preventDefault()
+    const kind = e.dataTransfer.getData('dragKind')
+    const bookingId = e.dataTransfer.getData('bookingId')
+    if (!bookingId) return
+
+    let result: { error: string | null }
+
+    if (kind === 'unassigned') {
+      result = await assignKennel(bookingId, targetKennelId)
+    } else if (kind === 'move') {
+      const dayOffset = parseInt(e.dataTransfer.getData('dayOffset') || '0')
+      const oldKennelId = e.dataTransfer.getData('oldKennelId')
+      const targetDate = getDropDate(e)
+      const newStartDate = isoFromMs(msFromIso(targetDate) - dayOffset * 86_400_000)
+      result = await moveBooking(bookingId, oldKennelId, targetKennelId, newStartDate)
+    } else if (kind === 'resize-start') {
+      const currentEnd = e.dataTransfer.getData('currentEnd')
+      result = await resizeBooking(bookingId, getDropDate(e), currentEnd)
+    } else if (kind === 'resize-end') {
+      const currentStart = e.dataTransfer.getData('currentStart')
+      result = await resizeBooking(bookingId, currentStart, getDropDate(e))
+    } else {
+      return
+    }
+
+    if (result.error) setDropError(result.error)
+    router.refresh()
+  }
 
   // ── Cell hover: direct DOM (avoids Tailwind group-hover Turbopack issues) ──
   function onCellEnter(e: React.MouseEvent<HTMLButtonElement>) {
@@ -243,7 +326,10 @@ export default function BelegungsplanClient({ kennels, bookings, allActiveCustom
       <div ref={toolbarRef} className="sticky top-0 z-30 bg-white border-b border-gray-200">
         {/* Title + booking type filter legend */}
         <div className="px-6 py-3 flex items-center justify-between">
-          <h1 className="text-xl font-bold text-gray-900">Belegungsplan</h1>
+          <div>
+            <h1 className="text-xl font-bold text-gray-900">Belegungsplan</h1>
+            <p className="text-xs text-gray-400 mt-0.5">{formatDateFull(days[0])} – {formatDateFull(days[days.length - 1])}</p>
+          </div>
           <div className="flex items-center gap-1">
             {BOOKING_TYPES.map(({ value, label, dot }) => {
               const active = filterType === value
@@ -278,14 +364,21 @@ export default function BelegungsplanClient({ kennels, bookings, allActiveCustom
               Zurücksetzen
             </button>
           )}
-          {todayIdx !== -1 && (
-            <button
-              onClick={scrollToToday}
-              className="h-9 rounded-md border border-gray-300 bg-white px-3 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
-            >
-              Heute
-            </button>
-          )}
+          <button
+            onClick={() => todayIdx !== -1 ? scrollToToday() : router.push('/belegungsplan')}
+            className="h-9 rounded-md border border-gray-300 bg-white px-3 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+          >
+            Heute
+          </button>
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-gray-500">ab</span>
+            <input
+              type="date"
+              value={startDate}
+              onChange={e => { if (e.target.value) router.push('/belegungsplan?from=' + e.target.value) }}
+              className="h-9 rounded-md border border-gray-300 bg-white px-2 text-sm text-gray-700 focus:border-indigo-400 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+            />
+          </div>
           <button
             onClick={() => setIsOverview(v => !v)}
             className={`h-9 rounded-md border px-3 text-sm font-medium transition-colors ${
@@ -307,15 +400,33 @@ export default function BelegungsplanClient({ kennels, bookings, allActiveCustom
           </p>
           <div className="flex flex-wrap gap-2">
             {unassigned.map(b => (
-              <button
+              <div
                 key={b.id}
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.setData('dragKind', 'unassigned')
+                  e.dataTransfer.setData('bookingId', b.id)
+                  e.dataTransfer.effectAllowed = 'move'
+                  setDragOp({ kind: 'unassigned', bookingId: b.id })
+                }}
+                onDragEnd={() => setDragOp(null)}
                 onClick={() => openBooking(b)}
-                className="rounded bg-amber-100 hover:bg-amber-200 border border-amber-300 px-2 py-1 text-xs text-amber-900 transition-colors"
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') openBooking(b) }}
+                className="rounded bg-amber-100 hover:bg-amber-200 border border-amber-300 px-2 py-1 text-xs text-amber-900 transition-colors cursor-grab active:cursor-grabbing select-none"
               >
                 {b.customer_name} · {b.dogs.map(d => d.name).join(', ')} · {b.start_date}
-              </button>
+              </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {dropError && (
+        <div className="mx-6 mt-2 rounded-md border border-red-200 bg-red-50 px-4 py-3 flex items-center justify-between">
+          <p className="text-sm text-red-800">{dropError}</p>
+          <button onClick={() => setDropError(null)} className="ml-4 text-red-500 hover:text-red-700 text-sm">✕</button>
         </div>
       )}
 
@@ -389,7 +500,13 @@ export default function BelegungsplanClient({ kennels, bookings, allActiveCustom
             <table className="border-collapse text-xs" style={{ width: TABLE_W }}>
               {colgroup}
               <tbody>
-                {kennels.map(kennel => {
+                {kennels.length === 0 ? (
+                  <tr>
+                    <td colSpan={days.length + 1} className="py-12 text-center text-sm text-gray-400">
+                      Keine aktiven Zwinger vorhanden
+                    </td>
+                  </tr>
+                ) : kennels.map(kennel => {
                   const cells: React.ReactNode[] = []
                   let i = 0
 
@@ -405,16 +522,27 @@ export default function BelegungsplanClient({ kennels, bookings, allActiveCustom
                     if (!cell) {
                       const kId = kennel.id
                       const dt  = day
-                      const cellBg =
-                        isToday     ? 'rgb(255 237 213)' :
-                        isFeiertag  ? '#e8f5e9' :
-                        isSchulfrei ? '#f1f8e9' :
-                        isWeekend   ? 'rgb(243 244 246)' : undefined
+                      const isResizeThisRow = dragOp !== null &&
+                        (dragOp.kind === 'resize-start' || dragOp.kind === 'resize-end') &&
+                        (dragOp as { kennelId: string }).kennelId === kennel.id
+                      const isValidDropTarget = dragOp !== null && (
+                        dragOp.kind === 'unassigned' ||
+                        dragOp.kind === 'move' ||
+                        isResizeThisRow
+                      )
+                      const cellBg = isValidDropTarget
+                        ? '#d1fae5'
+                        : isToday     ? 'rgb(255 237 213)' :
+                          isFeiertag  ? '#e8f5e9' :
+                          isSchulfrei ? '#f1f8e9' :
+                          isWeekend   ? 'rgb(243 244 246)' : undefined
                       cells.push(
                         <td
                           key={day}
                           className="border-r border-b border-gray-100 p-0.5"
                           style={{ width: DAY_COL_W, backgroundColor: cellBg }}
+                          onDragOver={(e) => { if (isValidDropTarget) { e.preventDefault(); e.dataTransfer.dropEffect = 'move' } }}
+                          onDrop={(e) => { if (isValidDropTarget) handleDrop(e, kId) }}
                         >
                           <button
                             onClick={() => openNewBooking(kId, dt)}
@@ -457,41 +585,110 @@ export default function BelegungsplanClient({ kennels, bookings, allActiveCustom
                         isSchulfrei ? '#f1f8e9' :
                         isWeekend   ? 'rgb(243 244 246)' : undefined
 
+                      const isResizeThisRow2 = dragOp !== null &&
+                        (dragOp.kind === 'resize-start' || dragOp.kind === 'resize-end') &&
+                        (dragOp as { kennelId: string }).kennelId === kennel.id
+                      const startInWindow = days.includes(booking.start_date)
+                      const endInWindow   = days.includes(booking.end_date)
+                      const hasConflict   = conflictBookingIds[kennel.id]?.has(booking.id) ?? false
+
                       cells.push(
                         <td
                           key={day}
                           colSpan={colSpan}
                           className="border-r border-b border-gray-100 p-0.5"
                           style={{ backgroundColor: bookedCellBg }}
+                          onDragOver={(e) => { if (isResizeThisRow2) { e.preventDefault(); e.dataTransfer.dropEffect = 'move' } }}
+                          onDrop={(e) => { if (isResizeThisRow2) handleDrop(e, kennel.id) }}
                         >
-                          <button
+                          <div
+                            draggable
+                            onDragStart={(e) => {
+                              const scrollLeft = containerRef.current?.scrollLeft ?? 0
+                              const containerLeft = containerRef.current?.getBoundingClientRect().left ?? 0
+                              const mouseX = e.clientX - containerLeft + scrollLeft - KENNEL_COL_W
+                              const hoverIdx = Math.max(0, Math.floor(mouseX / DAY_COL_W))
+                              const startIdx = days.findIndex(d => d === booking.start_date)
+                              const dayOffset = Math.max(0, hoverIdx - (startIdx >= 0 ? startIdx : 0))
+                              e.dataTransfer.setData('dragKind', 'move')
+                              e.dataTransfer.setData('bookingId', booking.id)
+                              e.dataTransfer.setData('dayOffset', String(dayOffset))
+                              e.dataTransfer.setData('oldKennelId', kennel.id)
+                              e.dataTransfer.effectAllowed = 'move'
+                              setDragOp({ kind: 'move', bookingId: booking.id, dayOffset, oldKennelId: kennel.id })
+                            }}
+                            onDragEnd={() => setDragOp(null)}
                             onClick={() => openBooking(booking)}
-                            className={`w-full rounded text-left overflow-hidden hover:opacity-75 transition-opacity ${
+                            role="button"
+                            tabIndex={0}
+                            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') openBooking(booking) }}
+                            className={`w-full rounded text-left overflow-hidden select-none cursor-grab active:cursor-grabbing hover:opacity-75 transition-opacity ${
                               isOverview
                                 ? 'h-5 px-1 flex items-center'
-                                : 'h-12 px-2 flex flex-col justify-center'
-                            }`}
+                                : 'h-12 flex flex-col justify-center relative'
+                            } ${hasConflict ? 'ring-2 ring-red-500 ring-inset' : ''}`}
                             style={{ backgroundColor: bg, color: textColor }}
                             title={`${booking.customer_name} · ${booking.dogs.map(d => d.name).join(', ')} · ${booking.start_date} – ${booking.end_date}`}
                           >
-                            {isOverview ? (
-                              <span className="block truncate text-[9px] font-semibold leading-none w-full">
-                                {booking.customer_name.split(' ').at(-1)}
-                              </span>
-                            ) : (
-                              <>
-                                <span className="block truncate text-xs font-semibold leading-tight">
+                            {/* Left resize handle */}
+                            {!isOverview && startInWindow && (
+                              <div
+                                className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize rounded-l"
+                                style={{ backgroundColor: 'rgba(0,0,0,0.18)' }}
+                                draggable
+                                onDragStart={(e) => {
+                                  e.stopPropagation()
+                                  e.dataTransfer.setData('dragKind', 'resize-start')
+                                  e.dataTransfer.setData('bookingId', booking.id)
+                                  e.dataTransfer.setData('currentEnd', booking.end_date)
+                                  e.dataTransfer.effectAllowed = 'move'
+                                  setDragOp({ kind: 'resize-start', bookingId: booking.id, kennelId: kennel.id })
+                                }}
+                                onDragEnd={() => setDragOp(null)}
+                                onClick={(e) => e.stopPropagation()}
+                              />
+                            )}
+
+                            {/* Content */}
+                            <div className={isOverview ? 'w-full' : 'px-3 w-full'}>
+                              {isOverview ? (
+                                <span className="block truncate text-[9px] font-semibold leading-none w-full">
                                   {booking.customer_name.split(' ').at(-1)}
                                 </span>
-                                <span className="block truncate text-[10px] opacity-70 leading-tight">
-                                  {booking.dogs.map(d => d.name).join(', ')}
-                                </span>
-                                <span className="block truncate text-[10px] opacity-55 leading-tight">
-                                  {formatDate(booking.start_date)}–{formatDate(booking.end_date)}
-                                </span>
-                              </>
+                              ) : (
+                                <>
+                                  <span className="block truncate text-xs font-semibold leading-tight">
+                                    {booking.customer_name.split(' ').at(-1)}
+                                  </span>
+                                  <span className="block truncate text-[10px] opacity-70 leading-tight">
+                                    {booking.dogs.map(d => d.name).join(', ')}
+                                  </span>
+                                  <span className="block truncate text-[10px] opacity-55 leading-tight">
+                                    {formatDate(booking.start_date)}–{formatDate(booking.end_date)}
+                                  </span>
+                                </>
+                              )}
+                            </div>
+
+                            {/* Right resize handle */}
+                            {!isOverview && endInWindow && (
+                              <div
+                                className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize rounded-r"
+                                style={{ backgroundColor: 'rgba(0,0,0,0.18)' }}
+                                draggable
+                                onDragStart={(e) => {
+                                  e.stopPropagation()
+                                  e.dataTransfer.setData('dragKind', 'resize-end')
+                                  e.dataTransfer.setData('bookingId', booking.id)
+                                  e.dataTransfer.setData('currentStart', booking.start_date)
+                                  e.dataTransfer.effectAllowed = 'move'
+                                  setDragOp({ kind: 'resize-end', bookingId: booking.id, kennelId: kennel.id })
+                                }}
+                                onDragEnd={() => setDragOp(null)}
+                                onClick={(e) => e.stopPropagation()}
+                              />
                             )}
-                          </button>
+                          </div>
                         </td>
                       )
                       i += colSpan
